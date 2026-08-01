@@ -35,6 +35,7 @@ export function getDb(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   initSchema(db);
+  migrateTimestampFormat(db);
   seedDefaults(db);
   return db;
 }
@@ -235,12 +236,65 @@ export function generateId(): string {
 }
 
 export function nowIso(): string {
-  return new Date().toISOString();
+  return formatLocalIso(new Date());
+}
+
+export function formatLocalIso(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  const millis = String(date.getMilliseconds()).padStart(3, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${millis}`;
 }
 
 export function todayDate(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+const TIMESTAMP_MIGRATIONS: ReadonlyArray<{ table: string; columns: readonly string[] }> = [
+  { table: 'items', columns: ['created_at', 'approved_at', 'archived_at', 'read_at'] },
+  { table: 'reviews', columns: ['due_at', 'last_reviewed_at'] },
+  { table: 'annotations', columns: ['created_at'] },
+  { table: 'fetch_logs', columns: ['created_at'] },
+  { table: 'reject_logs', columns: ['created_at'] },
+  { table: 'scheduler_state', columns: ['last_run_at'] },
+];
+
+const UTC_ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})$/;
+
+function convertStoredTimestamp(value: string): string | null {
+  if (!UTC_ISO_TIMESTAMP_RE.test(value)) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return formatLocalIso(date);
+}
+
+export function migrateTimestampFormat(database: Database.Database): void {
+  const migrate = database.transaction(() => {
+    for (const { table, columns } of TIMESTAMP_MIGRATIONS) {
+      const tableExists = database.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+      ).get(table);
+      if (!tableExists) continue;
+      for (const column of columns) {
+        const rows = database.prepare(
+          `SELECT rowid AS __rowid, ${column} AS __value FROM ${table} WHERE ${column} IS NOT NULL`
+        ).all() as Array<{ __rowid: number; __value: string }>;
+        const update = database.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
+        for (const row of rows) {
+          const converted = convertStoredTimestamp(row.__value);
+          if (converted !== null && converted !== row.__value) {
+            update.run(converted, row.__rowid);
+          }
+        }
+      }
+    }
+  });
+  migrate();
 }
 
 export function ensureDefaultPreferences(database: Database.Database = getDb()): void {
