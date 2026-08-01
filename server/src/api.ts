@@ -1,8 +1,9 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
-import { classifyManual } from './ai';
+import { classifyManual, redraftArticle } from './ai';
 import {
   DEFAULT_MINISTRY_IDS,
+  formatLocalIso,
   generateId,
   getDb,
   getItem,
@@ -472,7 +473,7 @@ export function createApp(): express.Express {
     }
   });
 
-  app.post('/api/items/:id/redraft', (req, res, next) => {
+  app.post('/api/items/:id/redraft', async (req, res, next) => {
     try {
       const db = getDb();
       const item = getItem(req.params.id);
@@ -485,10 +486,24 @@ export function createApp(): express.Express {
         return;
       }
       const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
-      const aiReason = reason ? `打回重拟：${reason}` : '打回重拟';
+      const settings = readAppSettings().ai;
+      const ministry = db.prepare('SELECT * FROM ministries WHERE id = ?').get(item.ministry_id) as MinistryRow | undefined;
+      const redrafted = await redraftArticle(
+        {
+          title: item.title,
+          summary: item.summary,
+          fullText: item.full_text,
+          qualityScore: item.quality_score,
+        },
+        reason,
+        ministry ?? { id: item.ministry_id, title: item.ministry_id, icon: 'folder-spark', color: '#8B7D6B', sort_order: 0 },
+        getPreference(item.ministry_id),
+        settings,
+      );
       db.prepare(
-        "UPDATE items SET status = 'pending', redraft_count = redraft_count + 1, ai_reason = ?, approved_at = NULL, archived_at = NULL WHERE id = ?"
-      ).run(aiReason, item.id);
+        `UPDATE items SET status = 'pending', redraft_count = redraft_count + 1, title = ?, summary = ?,
+         ai_reason = ?, quality_score = ?, approved_at = NULL, archived_at = NULL WHERE id = ?`
+      ).run(redrafted.title, redrafted.summary, redrafted.aiReason, redrafted.qualityScore, item.id);
       res.json(itemJson(getItem(item.id)!));
     } catch (error) {
       next(error);
@@ -775,7 +790,7 @@ export function importData(data: Record<string, unknown>): void {
     for (const raw of items) {
       const it = raw as Record<string, unknown>;
       const createdAt = Number(it.createdAtEpochMillis ?? it.created_at_epoch_millis ?? Date.now());
-      const createdAtIso = new Date(createdAt).toISOString();
+      const createdAtIso = formatLocalIso(new Date(createdAt));
       const archivedAt = it.archivedAt || createdAtIso;
       insertItem.run(
         String(it.id || generateId()),

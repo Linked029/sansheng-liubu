@@ -209,6 +209,66 @@ function clampScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+export interface RedraftResult {
+  title: string;
+  summary: string;
+  aiReason: string;
+  qualityScore: number;
+}
+
+export async function redraftArticle(
+  article: Pick<DraftArticle, 'title' | 'summary' | 'fullText' | 'qualityScore'>,
+  reason: string,
+  ministry: MinistryRow,
+  preference: PreferenceRow | undefined,
+  settings: AiEngineSettings,
+): Promise<RedraftResult> {
+  const fallback = (note: string): RedraftResult => ({
+    title: article.title,
+    summary: article.summary,
+    qualityScore: article.qualityScore,
+    aiReason: `打回重拟${reason ? `：${reason}` : ''}（${note}，保留原标题与摘要）`,
+  });
+
+  if (!isAiConfigured(settings)) return fallback('AI 未配置');
+
+  const prompt = [
+    '你是三省六部个人知识库的中书省拟折官，负责根据打回原因重新生成奏折。',
+    `目标六部：${ministry.title}（id=${ministry.id}）`,
+    `本部偏好：${preference?.description || '无特别偏好'}`,
+    `原标题：${article.title}`,
+    `原摘要：${article.summary}`,
+    `打回原因：${reason || '未填写'}`,
+    `文章正文节选：${article.fullText.slice(0, 6000)}`,
+    '',
+    '请针对打回原因修正并重新生成：',
+    '1. title：不超过 28 个中文字符的简洁标题；',
+    '2. summary：不超过 120 个中文字符的简介；',
+    '3. aiReason：一句话说明针对打回原因做了哪些修正；',
+    '4. qualityScore：0-100 的整数，代表与本部门偏好的匹配质量。',
+    '',
+    '只返回严格 JSON 对象，不要 Markdown：',
+    '{"title":"...","summary":"...","aiReason":"...","qualityScore":80}',
+  ].join('\n');
+
+  try {
+    const request = buildRequest(settings, prompt);
+    if (!request.endpoint) return fallback('AI 调用失败');
+    const response = await sendRequest(request);
+    if (response.code < 200 || response.code >= 300) return fallback('AI 调用失败');
+    const text = extractModelText(settings.engineType, response.body);
+    const json = JSON.parse(extractJsonObject(text));
+    return {
+      title: String(json.title || article.title).slice(0, 200),
+      summary: String(json.summary || article.summary || '').slice(0, 500),
+      aiReason: String(json.aiReason || 'AI 重拟完成'),
+      qualityScore: clampScore(Number(json.qualityScore)),
+    };
+  } catch {
+    return fallback('AI 调用失败');
+  }
+}
+
 export interface ClassifyResult {
   topicId: string;
   contentType: string;
