@@ -1,6 +1,7 @@
 import { draftArticle } from './ai';
 import { fetchSource } from './fetcher';
 import {
+  formatLocalIso,
   generateId,
   getDb,
   getPreference,
@@ -64,7 +65,7 @@ async function doRunMinistryFetch(ministryId: string): Promise<MinistryFetchSumm
     return { ministryId, ministryTitle: ministry.title, sources: [], newCandidates: 0, errors: [] };
   }
 
-  const fetched: DraftArticle[] = [];
+  const fetched: Array<{ article: DraftArticle; sourceId: string }> = [];
   const sourceResults: MinistryFetchSummary['sources'] = [];
   const errors: string[] = [];
   const today = todayDate();
@@ -85,11 +86,11 @@ async function doRunMinistryFetch(ministryId: string): Promise<MinistryFetchSumm
       'UPDATE sources SET last_fetched_at = ?, last_status = ?, fail_streak = 0 WHERE id = ?'
     ).run(nowIso(), 'ok', source.id);
 
-    const accepted: DraftArticle[] = [];
+    const accepted: Array<{ article: DraftArticle; sourceId: string }> = [];
     for (const article of result.articles) {
       if (isDuplicate(article, ministryId)) continue;
       if (isExcludedByPreference(article, preference)) continue;
-      accepted.push(article);
+      accepted.push({ article, sourceId: result.sourceId });
     }
     fetched.push(...accepted);
     insertFetchLog({ date: today, ministryId, sourceId: source.id, status: 'ok', itemCount: accepted.length, error: null });
@@ -98,19 +99,19 @@ async function doRunMinistryFetch(ministryId: string): Promise<MinistryFetchSumm
   let newCandidates = 0;
   if (fetched.length > 0) {
     const drafts = await Promise.all(
-      fetched.map(async (article) => {
-        const drafted = await draftArticle(article, ministry, preference, settings);
-        return drafted;
+      fetched.map(async ({ article, sourceId }) => {
+        const draft = await draftArticle(article, ministry, preference, settings);
+        return { draft, sourceId };
       }),
     );
-    drafts.sort((a, b) => b.qualityScore - a.qualityScore);
+    drafts.sort((a, b) => b.draft.qualityScore - a.draft.qualityScore);
 
     const dailyLimit = clampDailyLimit(preference?.daily_limit);
     const todayCount = countItemsCreatedToday(ministryId);
-    for (const draft of drafts) {
+    for (const { draft, sourceId } of drafts) {
       if (todayCount + newCandidates >= dailyLimit) break;
       const approved = autoApproveThreshold > 0 && draft.qualityScore >= autoApproveThreshold;
-      insertCandidate(ministryId, draft, approved, autoApproveThreshold);
+      insertCandidate(ministryId, draft, sourceId, approved, autoApproveThreshold);
       newCandidates++;
     }
   }
@@ -147,14 +148,20 @@ function parseAiSettings(raw: string | null): AiEngineSettings {
   }
 }
 
-function insertCandidate(ministryId: string, draft: DraftArticle, autoApproved: boolean, threshold: number): void {
+function insertCandidate(
+  ministryId: string,
+  draft: DraftArticle,
+  sourceId: string,
+  autoApproved: boolean,
+  threshold: number,
+): void {
   const db = getDb();
   const id = generateId();
   const now = nowIso();
   const item: ItemRow = {
     id,
     ministry_id: ministryId,
-    source_id: null,
+    source_id: sourceId,
     content_type: 'WEB_ARTICLE',
     title: draft.title || '无标题',
     summary: draft.summary || '',
@@ -309,7 +316,7 @@ function titleSimilarity(a: string, b: string): number {
 function daysAgoIso(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d.toISOString();
+  return formatLocalIso(d);
 }
 
 function markRan(ministryId: string): void {
