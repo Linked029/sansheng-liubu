@@ -31,3 +31,8 @@
 - P1：奏折阅读批注、已读状态、SM-2 复习队列与学习统计。
 - 独立小任务：修复 web `.oxlintrc.json` 解析问题。
 - 若需要跨时区移动语义，另开 P 定义时间策略。
+
+## 交付状态
+
+- 2026-08-01：用户确认收口，硬闸门 2 通过。
+- 修订版 `multi-agent-pipeline` skill 已同步至 [Linked029/codex-skills](https://github.com/Linked029/codex-skills)（commit `e08bc11`）。
