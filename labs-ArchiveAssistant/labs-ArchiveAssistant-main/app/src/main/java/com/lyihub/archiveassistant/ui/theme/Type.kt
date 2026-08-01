@@ -1,0 +1,139 @@
+package com.lyihub.archiveassistant.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.lyihub.archiveassistant.R
+
+val ImperialTitleFont = FontFamily(Font(R.font.san_ji_xing_kai_jian_ti_cu, FontWeight.Normal))
+
+val ImperialDisplayFont = FontFamily(Font(R.font.dinglie_song_typeface, FontWeight.Normal))
+
+val ImperialStampTitleFont = ImperialTitleFont
+
+val Typography =
+  Typography(
+    displayLarge =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 42.sp,
+        lineHeight = 50.sp,
+        letterSpacing = 0.sp,
+      ),
+    displayMedium =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 34.sp,
+        lineHeight = 42.sp,
+        letterSpacing = 0.sp,
+      ),
+    displaySmall =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 30.sp,
+        lineHeight = 38.sp,
+        letterSpacing = 0.sp,
+      ),
+    headlineLarge =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 27.sp,
+        lineHeight = 35.sp,
+        letterSpacing = 0.sp,
+      ),
+    headlineMedium =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 23.sp,
+        lineHeight = 31.sp,
+        letterSpacing = 0.sp,
+      ),
+    headlineSmall =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 21.sp,
+        lineHeight = 29.sp,
+        letterSpacing = 0.sp,
+      ),
+    titleLarge =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 21.sp,
+        lineHeight = 29.sp,
+        letterSpacing = 0.sp,
+      ),
+    titleMedium =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 18.sp,
+        lineHeight = 26.sp,
+        letterSpacing = 0.sp,
+      ),
+    titleSmall =
+      TextStyle(
+        fontFamily = ImperialTitleFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 22.sp,
+        letterSpacing = 0.sp,
+      ),
+    bodyLarge =
+      TextStyle(
+        fontFamily = ImperialDisplayFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
+        letterSpacing = 0.sp,
+      ),
+    bodyMedium =
+      TextStyle(
+        fontFamily = ImperialDisplayFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        letterSpacing = 0.sp,
+      ),
+    bodySmall =
+      TextStyle(
+        fontFamily = ImperialDisplayFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.sp,
+      ),
+    labelLarge =
+      TextStyle(
+        fontFamily = ImperialDisplayFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        letterSpacing = 0.sp,
+      ),
+    labelMedium =
+      TextStyle(
+        fontFamily = ImperialDisplayFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.sp,
+      ),
+    labelSmall =
+      TextStyle(
+        fontFamily = ImperialDisplayFont,
+        fontWeight = FontWeight.Normal,
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.sp,
+      ),
+  )

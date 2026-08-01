@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+**/build/
+
+# Local configuration
+local.properties
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+
+# Android build outputs
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.zip
+
+# Agent workspace artifacts
+.omo/
+.sisyphus/
+
+# Kotlin
+.kotlin/
+
+# OS files
+.DS_Store
+Thumbs.db
