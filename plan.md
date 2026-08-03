@@ -43,4 +43,4 @@
 - 状态：第 2 轮审查 PASS（第 1 轮 REWORK 已闭环）；真实 URL 复验通过：标题取 `og:title`、摘要回退正文前缀、全文非空；已合入，审查落盘 `docs/pipeline/p1-fix/review.md`。
 - 2026-08-03 二次复验：第二个微信链接 `https://mp.weixin.qq.com/s/yXvWLsj044f9Dv11x76TIw` 实测通过，标题“Codex 装完别急写代码，先装这 5 个 Skill”、摘要正常、全文 4299 字；输出见 `work/p1-fix-verify-2.log`。
 - 问题 2（Web 新增归档）：对话框“AI 智能归纳”仍走浏览器 CORS 代理抓网页，微信页抓取失败后回退 URL 填充标题/摘要、全文为空；改为优先调本地 `/api/fetch-web`（复用已修复的 `fetchUrl`），代理仅作兜底。
-- 问题 2 状态：第 1 轮独立审查 PASS，落盘 `docs/pipeline/p1-fix-web/review.md`；待合入提交并重启服务后实测。
+- 问题 2 状态：第 1 轮独立审查 PASS，落盘 `docs/pipeline/p1-fix-web/review.md`；已合入提交并重启服务，实测 `/api/fetch-web` 对该微信链接返回正确标题/摘要/全文（全文 4299 字）。
