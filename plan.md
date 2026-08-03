@@ -1,0 +1,35 @@
+# 三省六部 P1 生产计划（产物优先版）
+
+一句话需求：补齐阅读批注（批红）、已读状态、SM-2 复习队列与学习统计，server + web 一起交付，并修复 web lint。
+
+方案摘要：服务端在现有 SQLite 表（reviews/annotations）上补业务逻辑与 API：标记已读自动建复习、简化 SM-2 档位 1→3→7→15→30、到期队列、学习统计、批注 CRUD、导出/导入含复习与批注；Web 新增复习页、工作台复习统计、阅读器批注与标记已读；修复 .oxlintrc.json 使 lint 可跑。默认模式：main 直实现 + 1 个独立审查 Agent 全量 verify。
+
+## 状态表
+
+| P | 状态 | 执行 Agent | 审查结论 | 合并时间 |
+|---|------|-----------|----------|----------|
+| P1 | 已合并 | main（直实现） | PASS | 2026-08-03 |
+
+## P1：阅读与复习
+
+- 目标：P1 验收全部可机器验证。
+- 写集：server/src/types.ts、server/src/db.ts、server/src/api.ts、server/src/smoke.ts；archive-assistant-web/src/lib/api.ts、store/ui-store.ts、App.tsx、ui/screens/ReviewPane.tsx（新增）、ui/screens/HomePane.tsx、ui/screens/DashboardPane.tsx、ui/memorial/MemorialReader.tsx、.oxlintrc.json。
+- 验收标准：
+  1. server `npm.cmd run build` 通过，`npm.cmd run smoke` 通过，smoke 新增批注 CRUD、标记已读、SM-2 档位、到期队列、学习统计、导出/导入含复习与批注断言。
+  2. web `npm.cmd run build` 通过，`npm.cmd run lint` 通过。
+  3. 标记已读后 item.status=read 且 read_at 非空，reviews 自动创建（stage=0、interval=1、次日到期）。
+  4. 复习反馈 forgot/hard/good/easy 按 1→3→7→15→30 档位推进；30 天档 good/easy 后 status=mastered 并退出到期队列。
+  5. /api/reviews/due 返回 status=reviewing 且 date(due_at)<=今日 的条目，按到期时间排序。
+  6. /api/stats/learning 返回 dueToday、completedToday、completionRate（无任务为 null）、dueByMinistry、weeklyCount。
+  7. 批注支持新增/删除，按时间倒序返回。
+  8. /api/export/json 含 reviews/annotations，导入后保留。
+- 验证命令：
+  - `cd server && npm.cmd run build && npm.cmd run smoke`
+  - `cd archive-assistant-web && npm.cmd run build && npm.cmd run lint`
+- 验证摘要（2026-08-03）：
+  - server `npm.cmd run build` 通过；`npm.cmd run smoke` 通过，新增断言 PASS annotations/read/SM-2/stats/export-import。
+  - web `npm.cmd run build` 通过；`npm.cmd run lint` 通过（仅既有 warning）。
+  - GitHub 技能同步：codex-skills `1bf5a41..cfe44dd` 已推送。
+  - 第 2 轮审查：上一轮审查 Agent 未落盘 `docs/pipeline/p1/review.md`，按产物门判失败；已重开审查 Agent，结论以落盘 review.md 为准。
+  - 第 2 轮审查结论：PASS，落盘 `docs/pipeline/p1/review.md`；server build/smoke、web build/lint 独立重跑均通过。
+- 偏离记录：（暂无）

@@ -117,3 +117,34 @@ export interface MinistryFetchSummary {
   newCandidates: number;
   errors: string[];
 }
+
+export type ReviewStatus = 'reviewing' | 'mastered';
+export type ReviewRating = 'forgot' | 'hard' | 'good' | 'easy';
+
+export interface ReviewRow {
+  item_id: string;
+  stage: number;
+  due_at: string;
+  interval_days: number;
+  ease: number;
+  review_count: number;
+  last_reviewed_at: string | null;
+  status: ReviewStatus;
+}
+
+export interface AnnotationRow {
+  id: string;
+  item_id: string;
+  created_at: string;
+  text: string;
+}
+
+export interface LearningStats {
+  date: string;
+  dueToday: number;
+  completedToday: number;
+  completionRate: number | null;
+  dueByMinistry: Record<string, number>;
+  weeklyCount: number;
+  masteredCount: number;
+}

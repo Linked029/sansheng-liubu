@@ -293,6 +293,55 @@ async function main(): Promise<void> {
   );
   console.log('PASS timezone migration/dashboard');
 
+  const createdD = await api('POST', '/api/items', { ministryId: 'rites', title: '烟测复习 D', summary: 'D 摘要', fullText: 'D 正文', qualityScore: 70 });
+  await api('POST', `/api/items/${createdD.json.id}/approve`);
+  const readD = await api('POST', `/api/items/${createdD.json.id}/read`);
+  assert(readD.status === 200 && readD.json.status === 'read' && readD.json.readAt, '标记已读后 status=read 且 readAt 非空');
+  const annEmpty = await api('GET', `/api/items/${createdD.json.id}/annotations`);
+  assert(annEmpty.status === 200 && Array.isArray(annEmpty.json) && annEmpty.json.length === 0, '批注列表初始为空');
+  const ann1 = await api('POST', `/api/items/${createdD.json.id}/annotations`, { text: '批红一' });
+  assert(ann1.status === 201 && ann1.json.text === '批红一', '新增批注');
+  const ann2 = await api('POST', `/api/items/${createdD.json.id}/annotations`, { text: '批红二' });
+  const annList = await api('GET', `/api/items/${createdD.json.id}/annotations`);
+  assert(annList.json.length === 2, '批注列表 2 条');
+  const annDel = await api('DELETE', `/api/annotations/${ann1.json.id}`);
+  assert(annDel.status === 200, '删除批注');
+  const annList2 = await api('GET', `/api/items/${createdD.json.id}/annotations`);
+  assert(annList2.json.length === 1 && annList2.json[0].id === ann2.json.id, '删除后剩 1 条');
+
+  const dueBefore = await api('GET', '/api/reviews/due');
+  assert(!dueBefore.json.some((r: any) => r.item.id === createdD.json.id), '新复习明天才到期，今日不在队列');
+  db.prepare('UPDATE reviews SET due_at = ? WHERE item_id = ?').run(`${today}T00:00:00.000`, createdD.json.id);
+  const dueAfter = await api('GET', '/api/reviews/due');
+  const dueD = dueAfter.json.find((r: any) => r.item.id === createdD.json.id);
+  assert(dueD && dueD.stage === 0 && dueD.intervalDays === 1 && dueD.status === 'reviewing', '到期队列含 D，档位 1 天');
+
+  const reviewGood = await api('POST', `/api/reviews/${createdD.json.id}/review`, { rating: 'good' });
+  assert(reviewGood.status === 200 && reviewGood.json.reviewCount === 1 && reviewGood.json.intervalDays === 3 && reviewGood.json.item.status === 'reviewing', 'good 前进到 3 天档');
+  db.prepare('UPDATE reviews SET due_at = ? WHERE item_id = ?').run(`${today}T00:00:00.000`, createdD.json.id);
+  const reviewForgot = await api('POST', `/api/reviews/${createdD.json.id}/review`, { rating: 'forgot' });
+  assert(reviewForgot.json.stage === 0 && reviewForgot.json.intervalDays === 1 && reviewForgot.json.reviewCount === 2, 'forgot 回 1 天档');
+  db.prepare('UPDATE reviews SET stage = 4, interval_days = 30, due_at = ? WHERE item_id = ?').run(`${today}T00:00:00.000`, createdD.json.id);
+  const reviewMaster = await api('POST', `/api/reviews/${createdD.json.id}/review`, { rating: 'good' });
+  assert(reviewMaster.json.status === 'mastered' && reviewMaster.json.item.status === 'mastered', '30 天档 good 已掌握');
+  const dueAfterMaster = await api('GET', '/api/reviews/due');
+  assert(!dueAfterMaster.json.some((r: any) => r.item.id === createdD.json.id), '已掌握后退出到期队列');
+
+  const stats = await api('GET', '/api/stats/learning');
+  assert(stats.status === 200 && typeof stats.json.dueToday === 'number' && stats.json.completedToday >= 1, '学习统计返回且 completedToday>=1');
+  assert(typeof stats.json.completionRate === 'number' || stats.json.completionRate === null, 'completionRate 为数字或 null');
+  assert(stats.json.dueByMinistry && typeof stats.json.dueByMinistry === 'object', 'dueByMinistry 存在');
+
+  const exported = await api('GET', '/api/export/json');
+  assert(Array.isArray(exported.json.reviews) && Array.isArray(exported.json.annotations), '导出含 reviews/annotations');
+  const importBack = await api('POST', '/api/import/json', exported.json);
+  assert(importBack.status === 200, '导入导出数据');
+  const annAfterImport = await api('GET', `/api/items/${createdD.json.id}/annotations`);
+  assert(annAfterImport.json.some((a: any) => a.id === ann2.json.id && a.text === '批红二'), '导入后批注保留');
+  const reviewAfterImport = await api('GET', '/api/reviews/due');
+  assert(!reviewAfterImport.json.some((r: any) => r.item.id === createdD.json.id), '导入后已掌握仍不出现在到期队列');
+  console.log('PASS annotations/read/SM-2/stats/export-import');
+
   console.log('SMOKE PASS: health/CRUD/item-flow/redraft/scheduler/timezone 全部断言通过');
   } finally {
     await closeAll();

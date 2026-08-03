@@ -2,16 +2,26 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import cors from 'cors';
 import { classifyManual, redraftArticle } from './ai';
 import {
+  applyReviewFeedback,
   DEFAULT_MINISTRY_IDS,
+  deleteAnnotation,
   formatLocalIso,
   generateId,
   getDb,
   getItem,
   getPreference,
+  getReview,
   getSetting,
   ensureDefaultPreferences,
+  ensureReviewOnRead,
+  insertAnnotation,
+  learningStats,
+  listAllAnnotations,
+  listAnnotations,
+  listDueReviews,
   listItems,
   listMinistries,
+  listReviews,
   listSources,
   nowIso,
   setSetting,
@@ -21,11 +31,14 @@ import { fetchSource } from './fetcher';
 import { runAllMinistries, runMinistryFetch } from './scheduler';
 import type {
   AiEngineSettings,
+  AnnotationRow,
   FetchLogRow,
   ItemRow,
   MinistryRow,
   PreferenceRow,
   RejectLogRow,
+  ReviewRating,
+  ReviewRow,
   SourceRow,
 } from './types';
 
@@ -510,6 +523,109 @@ export function createApp(): express.Express {
     }
   });
 
+  app.get('/api/items/:id/annotations', (req, res, next) => {
+    try {
+      if (!getItem(req.params.id)) {
+        res.status(404).json({ error: '奏折不存在' });
+        return;
+      }
+      res.json(listAnnotations(req.params.id).map(annotationJson));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/items/:id/annotations', (req, res, next) => {
+    try {
+      if (!getItem(req.params.id)) {
+        res.status(404).json({ error: '奏折不存在' });
+        return;
+      }
+      const text = String(req.body.text || '').trim();
+      if (!text) {
+        res.status(400).json({ error: 'text 必填' });
+        return;
+      }
+      res.status(201).json(annotationJson(insertAnnotation(req.params.id, text)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/api/annotations/:id', (req, res, next) => {
+    try {
+      if (!deleteAnnotation(req.params.id)) {
+        res.status(404).json({ error: '批注不存在' });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/items/:id/read', (req, res, next) => {
+    try {
+      const item = getItem(req.params.id);
+      if (!item) {
+        res.status(404).json({ error: '奏折不存在' });
+        return;
+      }
+      if (item.status === 'candidate' || item.status === 'pending') {
+        res.status(400).json({ error: '待批奏折不能标记已读' });
+        return;
+      }
+      if (item.status === 'archived') {
+        const now = nowIso();
+        getDb().prepare("UPDATE items SET status = 'read', read_at = ? WHERE id = ?").run(now, item.id);
+        ensureReviewOnRead(item.id);
+      }
+      res.json(itemJson(getItem(item.id)!));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/reviews/due', (req, res, next) => {
+    try {
+      const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+        ? req.query.date
+        : todayDate();
+      res.json(listDueReviews(date).map(dueReviewJson));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/reviews/:id/review', (req, res, next) => {
+    try {
+      const rating = String(req.body.rating || '');
+      if (!['forgot', 'hard', 'good', 'easy'].includes(rating)) {
+        res.status(400).json({ error: 'rating 只能是 forgot/hard/good/easy' });
+        return;
+      }
+      if (!getReview(req.params.id)) {
+        res.status(400).json({ error: '该奏折尚无复习记录' });
+        return;
+      }
+      const result = applyReviewFeedback(req.params.id, rating as ReviewRating);
+      res.json(dueReviewJson(result));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/stats/learning', (req, res, next) => {
+    try {
+      const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+        ? req.query.date
+        : todayDate();
+      res.json(learningStats(date));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/api/scheduler/run', async (req, res, next) => {
     try {
       const ministryId = typeof req.body.ministryId === 'string' ? req.body.ministryId : undefined;
@@ -627,6 +743,8 @@ export function createApp(): express.Express {
         sources: listSources().map(sourceJson),
         preferences: listPreferences().map(preferenceJson),
         items: listItems().map(itemJson),
+        reviews: listReviews().map(reviewJson),
+        annotations: listAllAnnotations().map(annotationJson),
         settings: readAppSettings(),
       };
       res.type('application/json').send(JSON.stringify(payload, null, 2));
@@ -721,8 +839,12 @@ export function importData(data: Record<string, unknown>): void {
     const items = Array.isArray(data.items) ? data.items : [];
     const sources = Array.isArray(data.sources) ? data.sources : [];
     const preferences = Array.isArray(data.preferences) ? data.preferences : [];
+    const reviews = Array.isArray(data.reviews) ? data.reviews : [];
+    const annotations = Array.isArray(data.annotations) ? data.annotations : [];
 
     db.prepare('DELETE FROM items').run();
+    db.prepare('DELETE FROM reviews').run();
+    db.prepare('DELETE FROM annotations').run();
     db.prepare('DELETE FROM sources').run();
     db.prepare('DELETE FROM preferences').run();
     db.prepare('DELETE FROM reject_logs').run();
@@ -787,13 +909,16 @@ export function importData(data: Record<string, unknown>): void {
         created_at, approved_at, archived_at, read_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
+    const itemIds = new Set<string>();
     for (const raw of items) {
       const it = raw as Record<string, unknown>;
       const createdAt = Number(it.createdAtEpochMillis ?? it.created_at_epoch_millis ?? Date.now());
       const createdAtIso = formatLocalIso(new Date(createdAt));
       const archivedAt = it.archivedAt || createdAtIso;
+      const itemId = String(it.id || generateId());
+      itemIds.add(itemId);
       insertItem.run(
-        String(it.id || generateId()),
+        itemId,
         String(it.ministryId || it.topicId || 'rites'),
         it.sourceId || null,
         String(it.contentType || 'WEB_ARTICLE'),
@@ -811,6 +936,41 @@ export function importData(data: Record<string, unknown>): void {
         it.approvedAt || (String(it.status || 'archived') === 'archived' ? createdAtIso : null),
         archivedAt,
         it.readAt || null,
+      );
+    }
+
+    const insertReview = db.prepare(
+      `INSERT OR REPLACE INTO reviews (item_id, stage, due_at, interval_days, ease, review_count, last_reviewed_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const raw of reviews) {
+      const r = raw as Record<string, unknown>;
+      const itemId = String(r.itemId || r.item_id || '');
+      if (!itemIds.has(itemId)) continue;
+      insertReview.run(
+        itemId,
+        Number(r.stage ?? 0),
+        String(r.dueAt || r.due_at || nowIso()),
+        Number(r.intervalDays ?? r.interval_days ?? 1),
+        Number(r.ease ?? 2.5),
+        Number(r.reviewCount ?? r.review_count ?? 0),
+        r.lastReviewedAt || r.last_reviewed_at || null,
+        String(r.status || 'reviewing'),
+      );
+    }
+
+    const insertAnnotation = db.prepare(
+      'INSERT INTO annotations (id, item_id, created_at, text) VALUES (?, ?, ?, ?)'
+    );
+    for (const raw of annotations) {
+      const a = raw as Record<string, unknown>;
+      const itemId = String(a.itemId || a.item_id || '');
+      if (!itemIds.has(itemId)) continue;
+      insertAnnotation.run(
+        String(a.id || generateId()),
+        itemId,
+        String(a.createdAt || a.created_at || nowIso()),
+        String(a.text || ''),
       );
     }
 
@@ -928,6 +1088,32 @@ function rejectLogJson(row: RejectLogRow) {
     sourceUrl: row.source_url,
     createdAt: row.created_at,
   };
+}
+
+function reviewJson(row: ReviewRow) {
+  return {
+    itemId: row.item_id,
+    stage: row.stage,
+    dueAt: row.due_at,
+    intervalDays: row.interval_days,
+    ease: row.ease,
+    reviewCount: row.review_count,
+    lastReviewedAt: row.last_reviewed_at,
+    status: row.status,
+  };
+}
+
+function annotationJson(row: AnnotationRow) {
+  return {
+    id: row.id,
+    itemId: row.item_id,
+    createdAt: row.created_at,
+    text: row.text,
+  };
+}
+
+function dueReviewJson({ review, item }: { review: ReviewRow; item: ItemRow }) {
+  return { ...reviewJson(review), item: itemJson(item) };
 }
 
 function listPreferences() {

@@ -1,7 +1,16 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { MinistryRow, SourceRow, PreferenceRow, ItemRow } from './types';
+import type {
+  AnnotationRow,
+  ItemRow,
+  LearningStats,
+  MinistryRow,
+  PreferenceRow,
+  ReviewRating,
+  ReviewRow,
+  SourceRow,
+} from './types';
 
 const DATA_DIR = path.resolve(__dirname, '..', 'data');
 const DB_PATH = process.env.SSS_DB_PATH || path.join(DATA_DIR, 'sansheng.sqlite');
@@ -305,4 +314,167 @@ export function ensureDefaultPreferences(database: Database.Database = getDb()):
   for (const p of DEFAULT_PREFERENCES) {
     insert.run(p.ministry_id, p.description, p.exclude_keywords, p.exclude_domains, p.daily_limit, p.schedule_cron);
   }
+}
+
+export const REVIEW_STAGES = [1, 3, 7, 15, 30] as const;
+
+export function addDaysLocalIso(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return formatLocalIso(d);
+}
+
+export function getReview(itemId: string): ReviewRow | undefined {
+  return getDb().prepare('SELECT * FROM reviews WHERE item_id = ?').get(itemId) as ReviewRow | undefined;
+}
+
+export function listReviews(): ReviewRow[] {
+  return getDb().prepare('SELECT * FROM reviews ORDER BY due_at ASC').all() as ReviewRow[];
+}
+
+export function ensureReviewOnRead(itemId: string): ReviewRow {
+  const db = getDb();
+  const existing = getReview(itemId);
+  if (existing) return existing;
+  const review: ReviewRow = {
+    item_id: itemId,
+    stage: 0,
+    due_at: addDaysLocalIso(1),
+    interval_days: REVIEW_STAGES[0],
+    ease: 2.5,
+    review_count: 0,
+    last_reviewed_at: null,
+    status: 'reviewing',
+  };
+  db.prepare(
+    `INSERT INTO reviews (item_id, stage, due_at, interval_days, ease, review_count, last_reviewed_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(review.item_id, review.stage, review.due_at, review.interval_days, review.ease, review.review_count, review.last_reviewed_at, review.status);
+  return review;
+}
+
+export function listDueReviews(date: string): Array<{ review: ReviewRow; item: ItemRow }> {
+  const rows = getDb().prepare(
+    `SELECT r.item_id AS review_item_id, r.stage AS review_stage, r.due_at AS review_due_at,
+            r.interval_days AS review_interval_days, r.ease AS review_ease,
+            r.review_count AS review_review_count, r.last_reviewed_at AS review_last_reviewed_at,
+            r.status AS review_status, i.*
+     FROM reviews r JOIN items i ON i.id = r.item_id
+     WHERE r.status = 'reviewing' AND date(r.due_at) <= ?
+     ORDER BY r.due_at ASC, i.created_at DESC`
+  ).all(date) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({ review: reviewFromRow(row), item: itemFromRow(row) }));
+}
+
+function reviewFromRow(row: Record<string, unknown>): ReviewRow {
+  return {
+    item_id: String(row.review_item_id),
+    stage: Number(row.review_stage),
+    due_at: String(row.review_due_at),
+    interval_days: Number(row.review_interval_days),
+    ease: Number(row.review_ease),
+    review_count: Number(row.review_review_count),
+    last_reviewed_at: row.review_last_reviewed_at == null ? null : String(row.review_last_reviewed_at),
+    status: row.review_status as ReviewRow['status'],
+  };
+}
+
+function itemFromRow(row: Record<string, unknown>): ItemRow {
+  return {
+    id: String(row.id),
+    ministry_id: String(row.ministry_id),
+    source_id: row.source_id == null ? null : String(row.source_id),
+    content_type: String(row.content_type),
+    title: String(row.title),
+    summary: String(row.summary),
+    full_text: String(row.full_text),
+    source_url: row.source_url == null ? null : String(row.source_url),
+    document_format: row.document_format == null ? null : String(row.document_format),
+    file_name: row.file_name == null ? null : String(row.file_name),
+    status: row.status as ItemRow['status'],
+    quality_score: Number(row.quality_score),
+    ai_reason: row.ai_reason == null ? null : String(row.ai_reason),
+    redraft_count: Number(row.redraft_count),
+    created_at: String(row.created_at),
+    approved_at: row.approved_at == null ? null : String(row.approved_at),
+    archived_at: row.archived_at == null ? null : String(row.archived_at),
+    read_at: row.read_at == null ? null : String(row.read_at),
+  };
+}
+
+export function applyReviewFeedback(itemId: string, rating: ReviewRating): { review: ReviewRow; item: ItemRow } {
+  const db = getDb();
+  const review = getReview(itemId);
+  if (!review) throw new Error('该奏折尚无复习记录');
+  const item = getItem(itemId);
+  if (!item) throw new Error('奏折不存在');
+  if (review.status === 'mastered') return { review, item };
+
+  let nextStage: number;
+  if (rating === 'forgot') nextStage = 0;
+  else if (rating === 'hard') nextStage = Math.max(0, review.stage - 1);
+  else if (rating === 'good') nextStage = Math.min(REVIEW_STAGES.length - 1, review.stage + 1);
+  else nextStage = Math.min(REVIEW_STAGES.length - 1, review.stage + 2);
+
+  const mastered = nextStage === REVIEW_STAGES.length - 1 && (rating === 'good' || rating === 'easy');
+  const now = nowIso();
+  db.prepare(
+    `UPDATE reviews SET stage = ?, due_at = ?, interval_days = ?, review_count = review_count + 1,
+     last_reviewed_at = ?, status = ? WHERE item_id = ?`
+  ).run(nextStage, addDaysLocalIso(REVIEW_STAGES[nextStage]), REVIEW_STAGES[nextStage], now, mastered ? 'mastered' : 'reviewing', itemId);
+  db.prepare('UPDATE items SET status = ? WHERE id = ?').run(mastered ? 'mastered' : 'reviewing', itemId);
+  return { review: getReview(itemId)!, item: getItem(itemId)! };
+}
+
+export function listAnnotations(itemId: string): AnnotationRow[] {
+  return getDb().prepare(
+    'SELECT * FROM annotations WHERE item_id = ? ORDER BY created_at DESC, id DESC'
+  ).all(itemId) as AnnotationRow[];
+}
+
+export function listAllAnnotations(): AnnotationRow[] {
+  return getDb().prepare('SELECT * FROM annotations ORDER BY created_at DESC, id DESC').all() as AnnotationRow[];
+}
+
+export function insertAnnotation(itemId: string, text: string): AnnotationRow {
+  const row: AnnotationRow = { id: generateId(), item_id: itemId, created_at: nowIso(), text };
+  getDb().prepare('INSERT INTO annotations (id, item_id, created_at, text) VALUES (?, ?, ?, ?)')
+    .run(row.id, row.item_id, row.created_at, row.text);
+  return row;
+}
+
+export function deleteAnnotation(id: string): boolean {
+  return getDb().prepare('DELETE FROM annotations WHERE id = ?').run(id).changes > 0;
+}
+
+export function learningStats(date: string): LearningStats {
+  const db = getDb();
+  const dueToday = (db.prepare(
+    "SELECT COUNT(*) AS c FROM reviews WHERE status = 'reviewing' AND date(due_at) <= ?"
+  ).get(date) as { c: number }).c;
+  const completedToday = (db.prepare(
+    'SELECT COUNT(*) AS c FROM reviews WHERE last_reviewed_at IS NOT NULL AND date(last_reviewed_at) = ?'
+  ).get(date) as { c: number }).c;
+  const dueRows = db.prepare(
+    `SELECT i.ministry_id AS ministryId, COUNT(*) AS c FROM reviews r
+     JOIN items i ON i.id = r.item_id
+     WHERE r.status = 'reviewing' AND date(r.due_at) <= ?
+     GROUP BY i.ministry_id`
+  ).all(date) as Array<{ ministryId: string; c: number }>;
+  const dueByMinistry: Record<string, number> = {};
+  for (const row of dueRows) dueByMinistry[row.ministryId] = row.c;
+  const weeklyCount = (db.prepare(
+    "SELECT COUNT(*) AS c FROM reviews WHERE last_reviewed_at IS NOT NULL AND date(last_reviewed_at) >= date(?, '-6 days')"
+  ).get(date) as { c: number }).c;
+  const masteredCount = (db.prepare("SELECT COUNT(*) AS c FROM reviews WHERE status = 'mastered'").get() as { c: number }).c;
+  const total = completedToday + dueToday;
+  return {
+    date,
+    dueToday,
+    completedToday,
+    completionRate: total === 0 ? null : Math.round((completedToday / total) * 100),
+    dueByMinistry,
+    weeklyCount,
+    masteredCount,
+  };
 }
