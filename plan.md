@@ -35,3 +35,9 @@
   - 2026-08-03：用户确认继续把 multi-agent-pipeline 技能同步到 GitHub（Linked029/codex-skills main 分支）。
   - 2026-08-03：技能同步执行中；本地副本与克隆均为 `cfe44dd`，`git push origin main` 确认远程同步状态。
 - 偏离记录：（暂无）
+
+## P1 修复记录（2026-08-03）
+
+- 问题：吏部新建微信归档来源 `https://mp.weixin.qq.com/s/uIVsbu0LBkWNRYsduJU7Kg`，智能抓取后标题为 URL 截断、摘要为完整 URL、全文为空。
+- 定位：`server/src/fetcher.ts` 的 `fetchUrl` 仅取 `<title>`、`meta[name=description]` 与通用正文容器，未适配微信 `og:*` 元信息与 `#js_content`，且可能命中反爬页。
+- 状态：第 2 轮审查 PASS（第 1 轮 REWORK 已闭环）；真实 URL 复验通过：标题取 `og:title`、摘要回退正文前缀、全文非空；已合入，审查落盘 `docs/pipeline/p1-fix/review.md`。

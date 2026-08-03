@@ -206,8 +206,34 @@ async function main(): Promise<void> {
   );
   console.log('PASS redraft with AI mock');
 
-  pageServer = http.createServer((_req, res) => {
+  const wechatHtml = [
+    '<html><head>',
+    '<title></title>',
+    '<meta property="og:title" content="微信测试标题" />',
+    '<meta property="og:description" content="" />',
+    '</head><body>',
+    '<div id="js_content" style="visibility:hidden">',
+    '微信正文内容：这是用于复现微信文章抓取的本地正文，标题为空、描述为空，只靠 og:title 与 js_content 提取。',
+    '第二句继续补足正文长度，确保超过两百字阈值后不会回退到 body 或丢弃。',
+    '第三句继续补足正文长度，确保全文提取稳定并可通过断言。',
+    '第四句继续补足正文长度，确保全文提取稳定并可通过断言。',
+    '第五句继续补足正文长度，确保全文提取稳定并可通过断言。',
+    '第六句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '第七句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '第八句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '第九句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '第十句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '</div>',
+    '<div class="js_sentinel">SENTINEL_OUTSIDE_CONTENT</div>',
+    '</body></html>',
+  ].join('');
+
+  pageServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    if ((req.url || '').includes('wechat.html')) {
+      res.end(wechatHtml);
+      return;
+    }
     res.end(
       [
         '<html><head>',
@@ -224,6 +250,22 @@ async function main(): Promise<void> {
   await listen(pageServer);
   const pagePort = (pageServer.address() as AddressInfo).port;
   const pageUrl = `http://127.0.0.1:${pagePort}/article.html`;
+  const wxUrl = `http://127.0.0.1:${pagePort}/wechat.html`;
+  const { fetchSource } = await import('./fetcher');
+  const wxResult = await fetchSource({
+    id: 'smoke-wx',
+    name: '微信样式页',
+    kind: 'url',
+    location: wxUrl,
+    enabled: 1,
+  } as any);
+  assert(wxResult.ok && wxResult.articles.length === 1, '微信样式页抓取成功');
+  const wxArticle = wxResult.articles[0];
+  assert(wxArticle.title === '微信测试标题', `微信标题取 og:title，实际：${wxArticle.title}`);
+  assert(wxArticle.fullText.includes('微信正文内容'), '微信全文来自 js_content');
+  assert(!wxArticle.fullText.includes('SENTINEL_OUTSIDE_CONTENT'), '正文未回退到 js_content 外');
+  assert(wxArticle.summary.startsWith('微信正文内容'), 'og:description 为空时摘要回退正文前缀');
+  console.log('PASS wechat-style url fetch');
   const urlSrc = await api('POST', '/api/ministries/rites/sources', {
     name: '本地 URL 源',
     kind: 'url',
