@@ -32,4 +32,6 @@
   - GitHub 技能同步：codex-skills `1bf5a41..cfe44dd` 已推送。
   - 第 2 轮审查：上一轮审查 Agent 未落盘 `docs/pipeline/p1/review.md`，按产物门判失败；已重开审查 Agent，结论以落盘 review.md 为准。
   - 第 2 轮审查结论：PASS，落盘 `docs/pipeline/p1/review.md`；server build/smoke、web build/lint 独立重跑均通过。
+  - 2026-08-03：用户确认继续把 multi-agent-pipeline 技能同步到 GitHub（Linked029/codex-skills main 分支）。
+  - 2026-08-03：技能同步执行中；本地副本与克隆均为 `cfe44dd`，`git push origin main` 确认远程同步状态。
 - 偏离记录：（暂无）
