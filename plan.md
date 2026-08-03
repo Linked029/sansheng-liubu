@@ -44,3 +44,8 @@
 - 2026-08-03 二次复验：第二个微信链接 `https://mp.weixin.qq.com/s/yXvWLsj044f9Dv11x76TIw` 实测通过，标题“Codex 装完别急写代码，先装这 5 个 Skill”、摘要正常、全文 4299 字；输出见 `work/p1-fix-verify-2.log`。
 - 问题 2（Web 新增归档）：对话框“AI 智能归纳”仍走浏览器 CORS 代理抓网页，微信页抓取失败后回退 URL 填充标题/摘要、全文为空；改为优先调本地 `/api/fetch-web`（复用已修复的 `fetchUrl`），代理仅作兜底。
 - 问题 2 状态：第 1 轮独立审查 PASS，落盘 `docs/pipeline/p1-fix-web/review.md`；已合入提交并重启服务，实测 `/api/fetch-web` 对该微信链接返回正确标题/摘要/全文（全文 4299 字）。
+- 问题 3（Web 智能归纳覆盖抓取结果）：浏览器实测 `https://mp.weixin.qq.com/s/uIVsbu0LBkWNRYsduJU7Kg`，本地抓取成功、全文已填充，但 `handleAiClassify` 随后用 `rawText=URL` 跑 classify 并把结果覆盖标题/摘要（未配置 AI 时就是 URL 截断）。修复：有来源 URL 时抓取成功直接用抓取结果填充标题/摘要/全文并结束，抓取失败直接报错返回，不再用 URL 跑归纳。
+- 问题 3 状态：第 1 轮独立审查 PASS；浏览器实测标题/摘要/全文正确；已合入，审查落盘 `docs/pipeline/p1-fix-web-ui/review.md`。
+- 问题 4（Service Worker 缓存旧包）：浏览器实测仍跑旧代码，根因是 `public/sw.js` 缓存旧 `index.html` 与旧 bundle；修复为 `archive-assistant-v2` + 导航请求 network-first，清缓存后新代码生效。
+- 问题 4 状态：第 1 轮独立审查 PASS（`archive-assistant-v2` + 导航 network-first）；已合入。
+- 问题 5（博客园正文容器）：`fetchUrl` 增加 `#cnblogs_post_body`/`.postBody` 选择器，smoke 新增 `PASS cnblogs-style url fetch`；实测博客园链接标题/摘要正确、全文不再含导航文本；已随问题 3/4 一并审查 PASS 合入。

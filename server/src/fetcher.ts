@@ -88,6 +88,8 @@ async function fetchUrl(location: string): Promise<DraftArticle[]> {
     '#js_content',
     '.rich_media_content',
     '.rich_media_area_primary',
+    '#cnblogs_post_body',
+    '.postBody',
     'article',
     'main',
     '.post-content',

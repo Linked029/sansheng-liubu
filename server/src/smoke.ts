@@ -228,10 +228,33 @@ async function main(): Promise<void> {
     '</body></html>',
   ].join('');
 
+  const cnblogsHtml = [
+    '<html><head>',
+    '<title>博客园测试标题</title>',
+    '<meta name="description" content="博客园测试摘要">',
+    '</head><body>',
+    '<nav>导航哨兵 NAV_SENTINEL</nav>',
+    '<div id="cnblogs_post_body">',
+    '博客园正文内容：这是用于复现博客园文章抓取的本地正文，标题与摘要来自 meta。',
+    '第二句继续补足正文长度，确保超过两百字阈值后选择文章容器而非 body。',
+    '第三句继续补足正文长度，确保全文提取稳定并可通过断言。',
+    '第四句继续补足正文长度，确保全文提取稳定并可通过断言。',
+    '第五句继续补足正文长度，确保全文提取稳定并可通过断言。',
+    '第六句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '第七句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '第八句正文填充，继续增加长度直到明显超过两百字阈值。',
+    '</div>',
+    '</body></html>',
+  ].join('');
+
   pageServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if ((req.url || '').includes('wechat.html')) {
       res.end(wechatHtml);
+      return;
+    }
+    if ((req.url || '').includes('cnblogs.html')) {
+      res.end(cnblogsHtml);
       return;
     }
     res.end(
@@ -274,6 +297,14 @@ async function main(): Promise<void> {
   );
   const wxFetchBad = await api('POST', '/api/fetch-web', { url: 'not-a-url' });
   assert(wxFetchBad.status === 400, '/api/fetch-web 非法 url 返回 400');
+  const cnblogsUrl = `http://127.0.0.1:${pagePort}/cnblogs.html`;
+  const cnFetch = await api('POST', '/api/fetch-web', { url: cnblogsUrl });
+  assert(cnFetch.status === 200 && cnFetch.json.title === '博客园测试标题', '/api/fetch-web 博客园标题来自 meta');
+  assert(
+    cnFetch.json.fullText.includes('博客园正文内容') && !cnFetch.json.fullText.includes('NAV_SENTINEL'),
+    '/api/fetch-web 博客园正文来自 cnblogs_post_body 且排除导航',
+  );
+  console.log('PASS cnblogs-style url fetch');
   const urlSrc = await api('POST', '/api/ministries/rites/sources', {
     name: '本地 URL 源',
     kind: 'url',
