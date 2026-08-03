@@ -266,6 +266,14 @@ async function main(): Promise<void> {
   assert(!wxArticle.fullText.includes('SENTINEL_OUTSIDE_CONTENT'), '正文未回退到 js_content 外');
   assert(wxArticle.summary.startsWith('微信正文内容'), 'og:description 为空时摘要回退正文前缀');
   console.log('PASS wechat-style url fetch');
+  const wxFetchWeb = await api('POST', '/api/fetch-web', { url: wxUrl });
+  assert(wxFetchWeb.status === 200 && wxFetchWeb.json.ok === true, '/api/fetch-web 抓取成功');
+  assert(
+    wxFetchWeb.json.title === '微信测试标题' && wxFetchWeb.json.fullText.includes('微信正文内容'),
+    '/api/fetch-web 返回 og:title 与 js_content 全文',
+  );
+  const wxFetchBad = await api('POST', '/api/fetch-web', { url: 'not-a-url' });
+  assert(wxFetchBad.status === 400, '/api/fetch-web 非法 url 返回 400');
   const urlSrc = await api('POST', '/api/ministries/rites/sources', {
     name: '本地 URL 源',
     kind: 'url',

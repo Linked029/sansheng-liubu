@@ -27,7 +27,7 @@ import {
   setSetting,
   todayDate,
 } from './db';
-import { fetchSource } from './fetcher';
+import { fetchSource, fetchUrlArticle } from './fetcher';
 import { runAllMinistries, runMinistryFetch } from './scheduler';
 import type {
   AiEngineSettings,
@@ -275,6 +275,30 @@ export function createApp(): express.Express {
         error: result.error,
         articleCount: result.articles.length,
         preview: result.articles.slice(0, 5).map((a) => ({ title: a.title, summary: a.summary })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/fetch-web', async (req, res, next) => {
+    try {
+      const url = String(req.body?.url || '').trim();
+      if (!/^https?:\/\//i.test(url)) {
+        res.status(400).json({ error: 'url 必须是 http(s) 链接' });
+        return;
+      }
+      const article = await fetchUrlArticle(url);
+      if (!article) {
+        res.status(502).json({ error: '未抓取到文章内容' });
+        return;
+      }
+      res.json({
+        ok: true,
+        title: article.title,
+        summary: article.summary,
+        fullText: article.fullText,
+        sourceUrl: article.sourceUrl,
       });
     } catch (error) {
       next(error);

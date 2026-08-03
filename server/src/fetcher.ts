@@ -118,6 +118,11 @@ async function fetchUrl(location: string): Promise<DraftArticle[]> {
   ];
 }
 
+export async function fetchUrlArticle(location: string): Promise<DraftArticle | null> {
+  const articles = await fetchUrl(location);
+  return articles[0] ?? null;
+}
+
 export function stripHtml(html: string): string {
   if (!html) return '';
   return html
