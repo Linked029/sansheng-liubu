@@ -324,3 +324,49 @@ export async function classifyManual(
     return fallback;
   }
 }
+
+// ─── Direction decomposition (exploration track) ───────────────────
+
+export interface DecomposeDirectionResult {
+  terms: string[];
+}
+
+export async function decomposeDirection(
+  directionText: string,
+  ministryTitle: string,
+  settings: AiEngineSettings,
+): Promise<DecomposeDirectionResult> {
+  const fallback: DecomposeDirectionResult = {
+    terms: [directionText],
+  };
+  if (!isAiConfigured(settings)) return fallback;
+
+  const prompt = [
+    '你是三省六部个人知识库的探索官。用户希望扩展知识边界，请将他的方向描述拆解为 3~5 个具体的搜索关键词。',
+    '拆分原则：',
+    '- 每个搜索词应能从不同角度切入该方向，避免同义重复',
+    '- 中英文结合，技术类优先英文，通用类保留中文',
+    '- 搜索词应适合在搜索引擎中直接使用',
+    '- 返回 JSON 数组，不要额外解释',
+    `目标六部：${ministryTitle}`,
+    `方向描述：${directionText}`,
+    '',
+    '只返回严格 JSON 对象：',
+    '{"terms":["搜索词1","搜索词2","搜索词3","搜索词4","搜索词5"]}',
+  ].join('\n');
+
+  try {
+    const request = buildRequest(settings, prompt);
+    if (!request.endpoint) return fallback;
+    const response = await sendRequest(request);
+    if (response.code < 200 || response.code >= 300) return fallback;
+    const text = extractModelText(settings.engineType, response.body);
+    const json = JSON.parse(extractJsonObject(text));
+    const terms: string[] = Array.isArray(json.terms)
+      ? json.terms.map((t: unknown) => String(t).trim().slice(0, 120)).filter(Boolean).slice(0, 5)
+      : [directionText];
+    return { terms: terms.length > 0 ? terms : [directionText] };
+  } catch {
+    return fallback;
+  }
+}

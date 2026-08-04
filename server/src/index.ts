@@ -1,8 +1,9 @@
-import fs from 'node:fs';
+﻿import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import { createApp } from './api';
 import { getDb } from './db';
+import { ensureExplorationSchema } from './exploration';
 import { startScheduler } from './scheduler';
 
 const PORT = Number(process.env.PORT || 4318);
@@ -10,6 +11,7 @@ const DIST_DIR = path.resolve(__dirname, '..', '..', 'archive-assistant-web', 'd
 
 function main(): void {
   getDb();
+  ensureExplorationSchema();
   const app = createApp();
 
   if (fs.existsSync(DIST_DIR)) {

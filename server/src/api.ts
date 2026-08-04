@@ -41,6 +41,15 @@ import type {
   ReviewRow,
   SourceRow,
 } from './types';
+import {
+  archiveExplorationItem,
+  dismissExplorationItem,
+  getSearchDirection,
+  insertSearchDirection,
+  listExplorationItems,
+  listSearchDirections,
+} from './exploration';
+import { runExplorationPipeline, suggestFixedSources } from './search';
 
 export function createApp(): express.Express {
   const app = express();
@@ -822,6 +831,69 @@ export function createApp(): express.Express {
     }
   });
 
+
+  // ─── Exploration Scroll ────────────────────────────────────────────
+
+  app.post('/api/exploration/directions', (req, res, next) => {
+    try {
+      const { ministryId, directionText } = req.body as { ministryId?: string; directionText?: string };
+      if (!ministryId || !directionText) {
+        res.status(400).json({ error: 'ministryId 与 directionText 为必填' });
+        return;
+      }
+      const direction = insertSearchDirection(ministryId, directionText);
+      res.json(direction);
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/exploration/directions', (req, res, next) => {
+    try {
+      const ministryId = req.query.ministryId as string | undefined;
+      const directions = listSearchDirections(ministryId || undefined);
+      res.json(directions);
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/exploration/directions/:id/run', async (req, res, next) => {
+    try {
+      const direction = getSearchDirection(req.params.id);
+      if (!direction) { res.status(404).json({ error: '方向不存在' }); return; }
+      const result = await runExplorationPipeline(direction);
+      res.json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/exploration/items', (req, res, next) => {
+    try {
+      const ministryId = req.query.ministryId as string | undefined;
+      const statuses = req.query.status ? (req.query.status as string).split(',') : undefined;
+      const items = listExplorationItems(ministryId || undefined, statuses);
+      res.json(items);
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/exploration/items/:id/archive', (req, res, next) => {
+    try {
+      const ok = archiveExplorationItem(req.params.id);
+      if (!ok) { res.status(404).json({ error: '条目不存在或已归档' }); return; }
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  app.post('/api/exploration/items/:id/dismiss', (req, res, next) => {
+    try {
+      const ok = dismissExplorationItem(req.params.id);
+      if (!ok) { res.status(404).json({ error: '条目不存在' }); return; }
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  app.get('/api/exploration/suggestions', (_req, res, next) => {
+    try {
+      const suggestions = suggestFixedSources();
+      res.json(suggestions);
+    } catch (error) { next(error); }
+  });
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     console.error('API error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : '服务器内部错误' });

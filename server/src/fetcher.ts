@@ -8,8 +8,18 @@ const USER_AGENT =
 export async function fetchSource(source: SourceRow): Promise<FetchSourceResult> {
   try {
     if (source.kind === 'feed') {
-      const articles = await fetchFeed(source.location);
-      return { sourceId: source.id, name: source.name, ok: true, error: null, articles };
+      try {
+        const articles = await fetchFeed(source.location);
+        return { sourceId: source.id, name: source.name, ok: true, error: null, articles };
+      } catch (feedErr) {
+        // Feed parse failed — if location looks like an HTML URL, try URL fetch
+        const loc = source.location.trim();
+        if (/^https?:\/\//.test(loc) && !/\.(xml|rss|atom)(\?|$)/i.test(loc)) {
+          const articles = await fetchUrl(loc);
+          return { sourceId: source.id, name: source.name, ok: true, error: null, articles };
+        }
+        throw feedErr;
+      }
     }
     if (source.kind === 'url') {
       const articles = await fetchUrl(source.location);

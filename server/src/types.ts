@@ -148,3 +148,35 @@ export interface LearningStats {
   weeklyCount: number;
   masteredCount: number;
 }
+
+export type ExplorationItemStatus = 'new' | 'archived' | 'dismissed';
+
+export interface SearchDirectionRow {
+  id: string;
+  ministry_id: string;
+  direction_text: string;
+  created_at: string;
+  status: 'active' | 'fulfilled';
+}
+
+export interface SearchTermRow {
+  id: string;
+  direction_id: string;
+  term: string;
+  created_at: string;
+  last_searched_at: string | null;
+}
+
+export interface ExplorationItemRow {
+  id: string;
+  ministry_id: string;
+  direction_id: string;
+  search_term_id: string | null;
+  title: string;
+  summary: string;
+  full_text: string;
+  source_url: string | null;
+  source_name: string;
+  status: ExplorationItemStatus;
+  created_at: string;
+}
