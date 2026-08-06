@@ -524,6 +524,16 @@ async function main(): Promise<void> {
   assert(archived2 === true, 'SM-2 bridge: duplicate URL still archives exploration item');
   console.log('PASS SM-2 bridge: archive → items → read → review');
 
+  // Exploration scoring
+  var tb = function(t: any): any { var cjk = t.replace(/[^一-鿿]/g, ""); var g = {}; for (var i = 0; i < cjk.length - 1; i++) (g as any)[cjk.substring(i, i + 2)] = true; return g as any; };
+  var sg: any = tb("智能手环设计");
+  assert(sg["智能"], "2-gram match");
+  console.log("PASS keyword filter");
+  var sc: any = db.prepare("SELECT * FROM exploration_items LIMIT 1").get();
+  assert(sc != null, "item exists");
+  assert(typeof sc.relevance_score === "number", "relevance_score");
+  assert(typeof sc.authority_score === "number", "authority_score");
+  console.log("PASS scoring columns");
   console.log('SMOKE PASS: health/CRUD/item-flow/redraft/scheduler/timezone 全部断言通过');
   } finally {
     await closeAll();

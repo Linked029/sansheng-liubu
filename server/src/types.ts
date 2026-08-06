@@ -179,5 +179,7 @@ export interface ExplorationItemRow {
   source_url: string | null;
   source_name: string;
   status: ExplorationItemStatus;
+  relevance_score: number;
+  authority_score: number;
   created_at: string;
 }

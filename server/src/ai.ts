@@ -325,6 +325,54 @@ export async function classifyManual(
   }
 }
 
+// ─── Search result scoring (exploration relevance + authority) ─────
+
+export interface ScoreSearchResultOutput {
+  relevanceScore: number;
+  authorityScore: number;
+}
+
+export async function scoreSearchResult(
+  searchTerm: string,
+  title: string,
+  snippet: string,
+  sourceName: string,
+  settings: AiEngineSettings,
+): Promise<ScoreSearchResultOutput> {
+  const fallback: ScoreSearchResultOutput = { relevanceScore: 60, authorityScore: 50 };
+  if (!isAiConfigured(settings)) return fallback;
+
+  const prompt = [
+    '你是三省六部个人知识库的探索官。请对搜索结果做质量评分。',
+    `搜索词：${searchTerm}`,
+    `结果标题：${title}`,
+    `结果摘要：${snippet}`,
+    `来源：${sourceName}`,
+    '',
+    '评分维度：',
+    '1. relevanceScore (0-100)：标题和摘要与搜索词的相关程度。密切相关=90+，部分相关=60-80，弱相关=30-50，无关=0-20',
+    '2. authorityScore (0-100)：来源的权威性。知名技术站点/官方文档=80-100，个人博客/论坛=40-60，内容农场/垃圾站=0-20',
+    '',
+    '只返回严格 JSON 对象：',
+    '{"relevanceScore":80,"authorityScore":70}',
+  ].join('\n');
+
+  try {
+    const request = buildRequest(settings, prompt);
+    if (!request.endpoint) return fallback;
+    const response = await sendRequest(request);
+    if (response.code < 200 || response.code >= 300) return fallback;
+    const text = extractModelText(settings.engineType, response.body);
+    const json = JSON.parse(extractJsonObject(text));
+    return {
+      relevanceScore: clampScore(Number(json.relevanceScore)),
+      authorityScore: clampScore(Number(json.authorityScore)),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 // ─── Direction decomposition (exploration track) ───────────────────
 
 export interface DecomposeDirectionResult {

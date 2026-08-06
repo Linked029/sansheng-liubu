@@ -2,6 +2,7 @@
 import * as cheerio from "cheerio";
 import type { AiEngineSettings, ExplorationItemRow, SearchDirectionRow, SearchTermRow } from "./types";
 import { decomposeDirection } from "./ai";
+import { scoreSearchResult } from "./ai";
 import {
   insertExplorationItem,
   insertSearchTerm,
@@ -51,6 +52,26 @@ export async function searchWeb(query: string): Promise<SearchResult[]> {
   return results.slice(0, RESULTS_PER_TERM * 2);
 }
 
+function generateBigrams(text: string): Set<string> {
+  const bigrams = new Set<string>();
+  const cjk = text.replace(/[^\u4e00-\u9fff]/g, '');
+  for (let i = 0; i < cjk.length - 1; i++) bigrams.add(cjk.substring(i, i + 2));
+  const words = text.toLowerCase().match(/[a-z0-9]+/g) || [];
+  for (const w of words) if (w.length >= 2) bigrams.add(w);
+  for (let i = 0; i < words.length - 1; i++) bigrams.add(words[i] + ' ' + words[i + 1]);
+  return bigrams;
+}
+
+function keywordRelevant(searchTerm: string, title: string, snippet: string): boolean {
+  const haystack = (title + ' ' + snippet).toLowerCase();
+  const termBigrams = generateBigrams(searchTerm);
+  if (termBigrams.size === 0) return true;
+  for (const bigram of termBigrams) {
+    if (haystack.includes(bigram)) return true;
+  }
+  return false;
+}
+
 function extractSourceName(url: string): string {
   try {
     const host = new URL(url).hostname.replace(/^www\./, "");
@@ -67,13 +88,23 @@ async function runTermSearch(
   ministryId: string,
   directionId: string,
   seenUrls: Set<string>,
+  settings?: AiEngineSettings,
 ): Promise<number> {
   const results = await searchWeb(term.term);
   let added = 0;
   for (const r of results) {
     if (added >= RESULTS_PER_TERM) break;
     if (!r.url || isExplorationUrlDuplicate(r.url) || seenUrls.has(r.url)) continue;
-    // Relevance filter disabled; Chinese tokenisation is fragile. Future: lightweight 2-gram match.
+    if (!keywordRelevant(term.term, r.title, r.snippet)) continue;
+    let relevanceScore = 60;
+    let authorityScore = 50;
+    if (settings) {
+      try {
+        const scores = await scoreSearchResult(term.term, r.title, r.snippet, r.sourceName, settings);
+        relevanceScore = scores.relevanceScore;
+        authorityScore = scores.authorityScore;
+      } catch { /* fallback to defaults */ }
+    }
     const item: ExplorationItemRow = {
       id: generateId(),
       ministry_id: ministryId,
@@ -84,6 +115,8 @@ async function runTermSearch(
       full_text: r.snippet || "",
       source_url: r.url,
       source_name: r.sourceName || "未知来源",
+      relevance_score: relevanceScore,
+      authority_score: authorityScore,
       status: "new",
       created_at: nowIso(),
     };
@@ -139,7 +172,7 @@ export async function runExplorationPipeline(
   const seenUrls = new Set<string>();
   for (const term of terms) {
     try {
-      total += await runTermSearch(term, direction.ministry_id, direction.id, seenUrls);
+      total += await runTermSearch(term, direction.ministry_id, direction.id, seenUrls, settings);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push("搜索词 \"" + term.term + "\" 失败: " + msg);

@@ -46,6 +46,12 @@ export function ensureExplorationSchema(): void {
     CREATE INDEX IF NOT EXISTS idx_exploration_items_ministry ON exploration_items(ministry_id);
     CREATE INDEX IF NOT EXISTS idx_search_terms_direction ON search_terms(direction_id);
   `);
+
+  // Add relevance/authority score columns (migration)
+  for (const col of ['relevance_score', 'authority_score']) {
+    const has = db.prepare(`SELECT 1 FROM pragma_table_info('exploration_items') WHERE name = ?`).get(col);
+    if (!has) db.exec(`ALTER TABLE exploration_items ADD COLUMN ${col} REAL NOT NULL DEFAULT 0`);
+  }
 }
 
 // ─── Search Directions ─────────────────────────────────────────────
@@ -109,12 +115,12 @@ export function touchSearchTerm(id: string): void {
 export function insertExplorationItem(item: ExplorationItemRow): void {
   getDb().prepare(
     `INSERT INTO exploration_items
-       (id, ministry_id, direction_id, search_term_id, title, summary, full_text, source_url, source_name, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, ministry_id, direction_id, search_term_id, title, summary, full_text, source_url, source_name, status, relevance_score, authority_score, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     item.id, item.ministry_id, item.direction_id, item.search_term_id,
     item.title, item.summary, item.full_text, item.source_url, item.source_name,
-    item.status, item.created_at
+    item.status, item.relevance_score ?? 0, item.authority_score ?? 0, item.created_at
   );
 }
 
