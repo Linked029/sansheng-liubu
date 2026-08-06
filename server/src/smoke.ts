@@ -7,6 +7,8 @@ import type Database from 'better-sqlite3';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sansheng-smoke-'));
 process.env.SSS_DB_PATH = path.join(tmpDir, 'smoke.sqlite');
+process.env.SSS_TOKEN = 'smoke-test-token';
+process.env.SSS_ALLOW_LOCALHOST_FETCH = '1';
 
 let appServer: http.Server | null = null;
 let mockAiServer: http.Server | null = null;
@@ -37,7 +39,9 @@ async function closeAll(): Promise<void> {
 async function api(method: string, route: string, body?: unknown): Promise<{ status: number; json: any }> {
   const response = await fetch(`http://127.0.0.1:${port}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    headers: body === undefined
+      ? { 'Authorization': 'Bearer smoke-test-token' }
+      : { 'Content-Type': 'application/json', 'Authorization': 'Bearer smoke-test-token' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -424,19 +428,20 @@ async function main(): Promise<void> {
   console.log('PASS annotations/read/SM-2/stats/export-import');
 
   // P0 auth
-  assert(health.json?.authEnabled === false, 'authEnabled=false when SSS_TOKEN not set');
-  process.env.SSS_TOKEN = 'smoke-test-token';
   const ht2 = await api('GET', '/api/health');
   assert(ht2.json?.authEnabled === true, 'authEnabled=true when SSS_TOKEN set');
-  const blockedW = await api('POST', '/api/items', { ministryId: 'rites', title: 'blocked' });
-  assert(blockedW.status === 401, 'SSS_TOKEN -> no Bearer -> 401');
-  delete process.env.SSS_TOKEN;
+  const wrongW2 = await fetch(`http://127.0.0.1:${port}/api/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer wrong' },
+    body: JSON.stringify({ ministryId: 'rites', title: 'wrong' }),
+  });
+  assert(wrongW2.status === 403, 'wrong Bearer → 403');
   console.log('PASS auth: SSS_TOKEN guard');
 
   // P0 gemini key
   process.env.SSS_AI_KEY = 'smoke-env-ai-key';
   const setEnv = await api('GET', '/api/settings');
-  assert(setEnv.json?.ai?.apiKey === 'smoke-env-ai-key', 'SSS_AI_KEY env overrides');
+  assert(setEnv.json?.ai?.apiKey === 'smok****-key', 'SSS_AI_KEY env overrides (masked)');
   delete process.env.SSS_AI_KEY;
   console.log('PASS gemini key: env SSS_AI_KEY overrides');
 

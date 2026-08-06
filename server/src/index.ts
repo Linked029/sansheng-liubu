@@ -21,7 +21,7 @@ function main(): void {
     });
   }
 
-  app.listen(PORT, () => {
+  app.listen(PORT, '127.0.0.1', () => {
     console.log(`三省六部本地服务已启动：http://localhost:${PORT}`);
   });
 

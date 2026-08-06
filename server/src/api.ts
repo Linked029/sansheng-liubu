@@ -43,13 +43,13 @@ import { runExplorationPipeline, suggestFixedSources } from './search';
 
 export function createApp(): express.Express {
   const app = express();
-  app.use(cors());
+  app.use(cors({ origin: [/^https?:\/\/localhost:/, /^https?:\/\/127\.0\.0\.1:/] }));
   app.use(express.json({ limit: '50mb' }));
 
   app.use((req, _res, next) => {
     const token = process.env.SSS_TOKEN;
-    if (!token) { next(); return; }
     if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) { next(); return; }
+    if (!token) { next(); return; }
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith('Bearer ')) {
       _res.status(401).json({ error: '未授权：缺少 SSS_TOKEN 认证' });
@@ -305,6 +305,10 @@ export function createApp(): express.Express {
         res.status(400).json({ error: 'url 必须是 http(s) 链接' });
         return;
       }
+      if (!isUrlSafe(url)) {
+        res.status(400).json({ error: '不允许抓取内网或保留地址' });
+        return;
+      }
       const article = await fetchUrlArticle(url);
       if (!article) {
         res.status(502).json({ error: '未抓取到文章内容' });
@@ -403,6 +407,11 @@ export function createApp(): express.Express {
       }
       const id = generateId();
       const now = nowIso();
+      const sourceUrl = req.body.sourceUrl || null;
+      if (sourceUrl && !/^https?:\/\//i.test(sourceUrl)) {
+        res.status(400).json({ error: 'sourceUrl 必须是 http(s) 链接' });
+        return;
+      }
       const item: ItemRow = {
         id,
         ministry_id: req.body.ministryId,
@@ -411,7 +420,7 @@ export function createApp(): express.Express {
         title: String(req.body.title || '').trim(),
         summary: String(req.body.summary || '').trim(),
         full_text: String(req.body.fullText || ''),
-        source_url: req.body.sourceUrl || null,
+        source_url: sourceUrl,
         document_format: req.body.documentFormat || null,
         file_name: req.body.fileName || null,
         status: 'candidate',
@@ -555,7 +564,7 @@ export function createApp(): express.Express {
         return;
       }
       const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
-      const settings = readAppSettings().ai;
+      const settings = getInternalAiSettings();
       const ministry = db.prepare('SELECT * FROM ministries WHERE id = ?').get(item.ministry_id) as MinistryRow | undefined;
       const redrafted = await redraftArticle(
         {
@@ -782,7 +791,7 @@ export function createApp(): express.Express {
         res.status(400).json({ error: 'rawText 必填' });
         return;
       }
-      const settings = readAppSettings().ai;
+      const settings = getInternalAiSettings();
       const result = await classifyManual(rawText, listMinistries(), req.body.sourceUrl || undefined, settings);
       res.json(result);
     } catch (error) {
@@ -801,7 +810,7 @@ export function createApp(): express.Express {
         items: listItems(undefined, undefined).map(itemJson),
         reviews: listReviews().map(reviewJson),
         annotations: listAllAnnotations().map(annotationJson),
-        settings: readAppSettings(),
+        settings: { ...readAppSettings(), ai: { ...readAppSettings().ai, apiKey: '' } },
       };
       res.type('application/json').send(JSON.stringify(payload, null, 2));
     } catch (error) {
@@ -953,15 +962,56 @@ function readAppSettings(): {
   }[];
   const envKey = process.env.SSS_AI_KEY;
   const threshold = Number(getSetting('autoApproveThreshold') || '0');
+  const rawKey = envKey !== undefined ? envKey : (ai.apiKey || '');
   return {
     ai: {
       engineType: ai.engineType || 'OPENAI_COMPATIBLE',
       baseUrl: ai.baseUrl || '',
       modelName: ai.modelName || '',
-      apiKey: envKey !== undefined ? envKey : (ai.apiKey || ''),
+      apiKey: rawKey ? maskKey(rawKey) : '',
     },
     aiPresets: presets,
     autoApproveThreshold: Number.isFinite(threshold) ? threshold : 0,
+  };
+}
+
+function maskKey(key: string): string {
+  if (key.length <= 8) return '****';
+  return key.slice(0, 4) + '****' + key.slice(-4);
+}
+
+// ─── URL safety ───────────────────────────────────────────────────
+
+const BLOCKED_HOSTS = ['127.0.0.1', '::1', '0.0.0.0', '169.254.169.254', 'localhost', 'metadata.google.internal'];
+
+function isUrlSafe(raw: string): boolean {
+  let url: URL;
+  try { url = new URL(raw); } catch { return false; }
+  if (!['http:', 'https:'].includes(url.protocol)) return false;
+  if (process.env.SSS_ALLOW_LOCALHOST_FETCH === '1') return true;
+  const host = url.hostname.toLowerCase();
+  if (BLOCKED_HOSTS.includes(host)) return false;
+  if (host === '[::1]' || host === '[::]') return false;
+  // Block private / loopback / link-local IPs
+  if (/^127\.\d+\.\d+\.\d+$/.test(host)) return false;
+  if (/^10\.\d+\.\d+\.\d+$/.test(host)) return false;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(host)) return false;
+  if (/^192\.168\.\d+\.\d+$/.test(host)) return false;
+  if (/^169\.254\.\d+\.\d+$/.test(host)) return false;
+  if (/^0\.\d+\.\d+\.\d+$/.test(host)) return false;
+  return true;
+}
+
+// ─── AI helpers ───────────────────────────────────────────────────
+
+function getInternalAiSettings(): AiEngineSettings {
+  const ai = safeParseObject(getSetting('ai')) as Partial<AiEngineSettings>;
+  const envKey = process.env.SSS_AI_KEY;
+  return {
+    engineType: ai.engineType || 'OPENAI_COMPATIBLE',
+    baseUrl: ai.baseUrl || '',
+    modelName: ai.modelName || '',
+    apiKey: envKey !== undefined ? envKey : (ai.apiKey || ''),
   };
 }
 
