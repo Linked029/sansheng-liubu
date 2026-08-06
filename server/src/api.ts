@@ -43,6 +43,7 @@ import type {
 } from './types';
 import {
   archiveExplorationItem,
+  deleteSearchDirection,
   dismissExplorationItem,
   getSearchDirection,
   insertSearchDirection,
@@ -833,6 +834,14 @@ export function createApp(): express.Express {
 
 
   // ─── Exploration Scroll ────────────────────────────────────────────
+
+  app.delete('/api/exploration/directions/:id', (req, res, next) => {
+    try {
+      const ok = deleteSearchDirection(req.params.id);
+      if (!ok) { res.status(404).json({ error: '方向不存在' }); return; }
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
 
   app.post('/api/exploration/directions', (req, res, next) => {
     try {

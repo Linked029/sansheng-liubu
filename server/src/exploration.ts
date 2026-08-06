@@ -158,14 +158,19 @@ export function dismissExplorationItem(id: string): boolean {
 // ─── Dedup helpers ─────────────────────────────────────────────────
 
 export function isExplorationUrlDuplicate(sourceUrl: string): boolean {
+  // Only check items (formally archived) and reject_logs, not exploration_items.
+  // Exploration items are temporary — re-searching a direction should add new results,
+  // and cross-direction dedup is handled by the user when archiving.
   if (!sourceUrl) return false;
   const db = getDb();
   if (db.prepare("SELECT id FROM items WHERE source_url = ? LIMIT 1").get(sourceUrl)) return true;
-  if (db.prepare("SELECT id FROM exploration_items WHERE source_url = ? LIMIT 1").get(sourceUrl)) return true;
   return false;
 }
 
-export function countArchivesFromSource(sourceName: string): number {
+
+export function deleteSearchDirection(id: string): boolean {
+  return getDb().prepare("DELETE FROM search_directions WHERE id = ?").run(id).changes > 0;
+}export function countArchivesFromSource(sourceName: string): number {
   const row = getDb().prepare(
     "SELECT COUNT(*) AS c FROM exploration_items WHERE source_name = ? AND status = 'archived'"
   ).get(sourceName) as { c: number };

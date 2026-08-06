@@ -1,9 +1,8 @@
-﻿// Exploration search: DuckDuckGo HTML scraping + pipeline
+// Exploration search: DuckDuckGo HTML scraping + pipeline
 import * as cheerio from "cheerio";
 import type { AiEngineSettings, ExplorationItemRow, SearchDirectionRow, SearchTermRow } from "./types";
 import { decomposeDirection } from "./ai";
 import {
-  fulfillSearchDirection,
   insertExplorationItem,
   insertSearchTerm,
   isExplorationUrlDuplicate,
@@ -26,8 +25,9 @@ export interface SearchResult {
 
 // ─── DuckDuckGo search ─────────────────────────────────────────────
 
-export async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
-  const url = "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query);
+export async function searchWeb(query: string): Promise<SearchResult[]> {
+  // Bing search (accessible in China); DuckDuckGo is geo-blocked
+  const url = "https://www.bing.com/search?q=" + encodeURIComponent(query) + "&setlang=zh-cn";
   const response = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, "Accept": "text/html" },
     signal: AbortSignal.timeout(15000),
@@ -36,10 +36,10 @@ export async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
   const html = await response.text();
   const $ = cheerio.load(html);
   const results: SearchResult[] = [];
-  $(".result").each((_, el) => {
+  $("#b_results .b_algo").each((_, el) => {
     const $el = $(el);
-    const $link = $el.find(".result__a").first();
-    const $snippet = $el.find(".result__snippet").first();
+    const $link = $el.find("h2 a").first();
+    const $snippet = $el.find(".b_caption p").first();
     const title = $link.text().trim();
     const href = $link.attr("href") || "";
     const snippet = $snippet.text().trim();
@@ -65,12 +65,19 @@ async function runTermSearch(
   term: SearchTermRow,
   ministryId: string,
   directionId: string,
+  seenUrls: Set<string>,
 ): Promise<number> {
-  const results = await searchDuckDuckGo(term.term);
+  const results = await searchWeb(term.term);
   let added = 0;
   for (const r of results) {
     if (added >= RESULTS_PER_TERM) break;
-    if (!r.url || isExplorationUrlDuplicate(r.url)) continue;
+    if (!r.url || isExplorationUrlDuplicate(r.url) || seenUrls.has(r.url)) continue;
+    // Relevance filter: insert spaces between ASCII/CJK boundaries, then space-split
+    const raw = term.term.toLowerCase().replace(/([a-z0-9])([\u4e00-\u9fff])/gi, '$1 $2').replace(/([\u4e00-\u9fff])([a-z0-9])/gi, '$1 $2');
+    const segments = raw.split(/\\s+/).filter((s: string) => s.length >= 2);
+    const haystack = (r.title + ' ' + r.snippet).toLowerCase();
+    // Relevance filter disabled — let user manually dismiss irrelevant results
+    // if (segments.length > 0 && !segments.some((s: string) => haystack.includes(s))) continue;
     const item: ExplorationItemRow = {
       id: generateId(),
       ministry_id: ministryId,
@@ -133,16 +140,17 @@ export async function runExplorationPipeline(
   }
 
   let total = 0;
+  const seenUrls = new Set<string>();
   for (const term of terms) {
     try {
-      total += await runTermSearch(term, direction.ministry_id, direction.id);
+      total += await runTermSearch(term, direction.ministry_id, direction.id, seenUrls);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push("搜索词 \"" + term.term + "\" 失败: " + msg);
     }
   }
 
-  fulfillSearchDirection(direction.id);
+  // Direction stays active — user can re-run to refine results
   return { directionId: direction.id, terms: decomposed.terms, totalResults: total, errors };
 }
 
