@@ -1,9 +1,13 @@
 import Parser from 'rss-parser';
 import * as cheerio from 'cheerio';
 import type { DraftArticle, FetchSourceResult, SourceRow } from './types';
+import { assertSafeFetchTarget } from './urlSafety';
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export async function fetchSource(source: SourceRow): Promise<FetchSourceResult> {
   try {
@@ -44,11 +48,14 @@ export async function fetchSource(source: SourceRow): Promise<FetchSourceResult>
 }
 
 async function fetchFeed(location: string): Promise<DraftArticle[]> {
-  const parser = new Parser({
-    timeout: 15000,
+  const parser = new Parser();
+  const response = await safeFetch(location, {
     headers: { 'User-Agent': USER_AGENT, Accept: 'application/rss+xml, application/atom+xml, text/xml' },
+    signal: AbortSignal.timeout(15000),
   });
-  const feed = await parser.parseURL(location);
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+  const text = await response.text();
+  const feed = await parser.parseString(text);
   const items = feed.items ?? [];
   return items.slice(0, 50).map((item) => {
     const rawContent = item.content || item['content:encoded'] || item.contentSnippet || item.summary || '';
@@ -67,14 +74,13 @@ async function fetchFeed(location: string): Promise<DraftArticle[]> {
 }
 
 async function fetchUrl(location: string): Promise<DraftArticle[]> {
-  const response = await fetch(location, {
+  const response = await safeFetch(location, {
     headers: {
       'User-Agent': USER_AGENT,
       Accept: 'text/html,application/xhtml+xml',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     },
     signal: AbortSignal.timeout(20000),
-    redirect: 'follow',
   });
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
   const html = await response.text();
@@ -133,6 +139,31 @@ async function fetchUrl(location: string): Promise<DraftArticle[]> {
 export async function fetchUrlArticle(location: string): Promise<DraftArticle | null> {
   const articles = await fetchUrl(location);
   return articles[0] ?? null;
+}
+
+async function safeFetch(location: string, init: RequestInit = {}): Promise<Response> {
+  return safeFetchWithRedirects(location, init, MAX_REDIRECTS);
+}
+
+async function safeFetchWithRedirects(
+  location: string,
+  init: RequestInit,
+  redirectsLeft: number,
+): Promise<Response> {
+  await assertSafeFetchTarget(location);
+  const response = await fetch(location, { ...init, redirect: 'manual' });
+  if (!REDIRECT_STATUSES.has(response.status)) return response;
+
+  const nextLocation = response.headers.get('location');
+  if (!nextLocation) return response;
+  if (redirectsLeft <= 0) throw new Error('重定向次数过多');
+  let nextUrl: string;
+  try {
+    nextUrl = new URL(nextLocation, location).toString();
+  } catch {
+    throw new Error('重定向目标无效');
+  }
+  return safeFetchWithRedirects(nextUrl, init, redirectsLeft - 1);
 }
 
 export function stripHtml(html: string): string {

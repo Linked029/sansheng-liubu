@@ -30,6 +30,8 @@ import {
 } from './db';
 import { fetchSource, fetchUrlArticle } from './fetcher';
 import { runAllMinistries, runMinistryFetch } from './scheduler';
+import { getInternalAiSettings, isMaskedKey, maskKey } from './settings';
+import { assertSafeFetchTarget, assertSafeHttpUrl, UnsafeUrlError } from './urlSafety';
 import {
   archiveExplorationItem,
   deleteSearchDirection,
@@ -224,6 +226,11 @@ export function createApp(): express.Express {
         res.status(400).json({ error: 'name 必填，kind 只能是 feed/url/manual' });
         return;
       }
+      const locationError = validateSourceLocation(kind, location);
+      if (locationError) {
+        res.status(400).json({ error: locationError });
+        return;
+      }
       const id = generateId();
       db.prepare(
         `INSERT INTO sources (id, ministry_id, name, kind, location, enabled, fail_streak)
@@ -251,6 +258,11 @@ export function createApp(): express.Express {
         location: typeof req.body.location === 'string' ? req.body.location.trim() : existing.location,
         enabled: typeof req.body.enabled === 'boolean' ? (req.body.enabled ? 1 : 0) : existing.enabled,
       };
+      const locationError = validateSourceLocation(nextRow.kind, nextRow.location);
+      if (locationError) {
+        res.status(400).json({ error: locationError });
+        return;
+      }
       db.prepare('UPDATE sources SET name = ?, kind = ?, location = ?, enabled = ? WHERE id = ?').run(
         nextRow.name,
         nextRow.kind,
@@ -305,11 +317,22 @@ export function createApp(): express.Express {
         res.status(400).json({ error: 'url 必须是 http(s) 链接' });
         return;
       }
-      if (!isUrlSafe(url)) {
-        res.status(400).json({ error: '不允许抓取内网或保留地址' });
+      try {
+        await assertSafeFetchTarget(url);
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : '不允许抓取内网或保留地址' });
         return;
       }
-      const article = await fetchUrlArticle(url);
+      let article;
+      try {
+        article = await fetchUrlArticle(url);
+      } catch (error) {
+        if (error instanceof UnsafeUrlError) {
+          res.status(400).json({ error: error.message });
+          return;
+        }
+        throw error;
+      }
       if (!article) {
         res.status(502).json({ error: '未抓取到文章内容' });
         return;
@@ -455,7 +478,14 @@ export function createApp(): express.Express {
       if (typeof req.body.title === 'string') fields.title = req.body.title.trim();
       if (typeof req.body.summary === 'string') fields.summary = req.body.summary.trim();
       if (typeof req.body.fullText === 'string') fields.full_text = req.body.fullText;
-      if (typeof req.body.sourceUrl === 'string') fields.source_url = req.body.sourceUrl || null;
+      if (typeof req.body.sourceUrl === 'string') {
+        const sourceUrl = req.body.sourceUrl || null;
+        if (sourceUrl && !/^https?:\/\//i.test(sourceUrl)) {
+          res.status(400).json({ error: 'sourceUrl 必须是 http(s) 链接' });
+          return;
+        }
+        fields.source_url = sourceUrl;
+      }
       if (typeof req.body.contentType === 'string') fields.content_type = req.body.contentType;
       if (typeof req.body.documentFormat === 'string') fields.document_format = req.body.documentFormat || null;
       if (typeof req.body.fileName === 'string') fields.file_name = req.body.fileName || null;
@@ -750,15 +780,18 @@ export function createApp(): express.Express {
 
   app.put('/api/settings/ai', (req, res, next) => {
     try {
-      const current = readAppSettings().ai;
+      const current = getInternalAiSettings();
       const nextAi: AiEngineSettings = {
         engineType: req.body.engineType || current.engineType,
         baseUrl: typeof req.body.baseUrl === 'string' ? req.body.baseUrl : current.baseUrl,
         modelName: typeof req.body.modelName === 'string' ? req.body.modelName : current.modelName,
-        apiKey: typeof req.body.apiKey === 'string' ? req.body.apiKey : current.apiKey,
+        apiKey:
+          typeof req.body.apiKey === 'string' && !isMaskedKey(req.body.apiKey)
+            ? req.body.apiKey
+            : current.apiKey,
       };
       setSetting('ai', JSON.stringify(nextAi));
-      res.json(nextAi);
+      res.json(readAppSettings().ai);
     } catch (error) {
       next(error);
     }
@@ -766,9 +799,28 @@ export function createApp(): express.Express {
 
   app.put('/api/settings/ai-presets', (req, res, next) => {
     try {
-      const presets = Array.isArray(req.body.presets) ? req.body.presets : [];
+      const incoming = Array.isArray(req.body.presets) ? (req.body.presets as Record<string, unknown>[]) : [];
+      const existing = safeParseArray(getSetting('aiPresets')) as unknown as {
+        name: string;
+        apiKey: string;
+      }[];
+      const presets = incoming.map((p) => {
+        const name = String(p.name || '').trim();
+        let apiKey = typeof p.apiKey === 'string' ? p.apiKey : '';
+        if (isMaskedKey(apiKey)) {
+          const previous = existing.find((e) => e.name === name);
+          apiKey = previous?.apiKey && !isMaskedKey(previous.apiKey) ? previous.apiKey : '';
+        }
+        return {
+          name,
+          engineType: String(p.engineType || 'OPENAI_COMPATIBLE'),
+          baseUrl: String(p.baseUrl || ''),
+          modelName: String(p.modelName || ''),
+          apiKey,
+        };
+      });
       setSetting('aiPresets', JSON.stringify(presets));
-      res.json({ presets });
+      res.json({ presets: readAppSettings().aiPresets });
     } catch (error) {
       next(error);
     }
@@ -801,6 +853,7 @@ export function createApp(): express.Express {
 
   app.get('/api/export/json', (_req, res, next) => {
     try {
+      const settings = readAppSettings();
       const payload = {
         version: 'v3',
         exportedAt: new Date().toISOString(),
@@ -810,7 +863,11 @@ export function createApp(): express.Express {
         items: listItems(undefined, undefined).map(itemJson),
         reviews: listReviews().map(reviewJson),
         annotations: listAllAnnotations().map(annotationJson),
-        settings: { ...readAppSettings(), ai: { ...readAppSettings().ai, apiKey: '' } },
+        settings: {
+          ...settings,
+          ai: { ...settings.ai, apiKey: '' },
+          aiPresets: settings.aiPresets.map((p) => ({ ...p, apiKey: '' })),
+        },
       };
       res.type('application/json').send(JSON.stringify(payload, null, 2));
     } catch (error) {
@@ -970,49 +1027,20 @@ function readAppSettings(): {
       modelName: ai.modelName || '',
       apiKey: rawKey ? maskKey(rawKey) : '',
     },
-    aiPresets: presets,
+    aiPresets: presets.map((p) => ({ ...p, apiKey: p.apiKey ? maskKey(p.apiKey) : '' })),
     autoApproveThreshold: Number.isFinite(threshold) ? threshold : 0,
   };
 }
 
-function maskKey(key: string): string {
-  if (key.length <= 8) return '****';
-  return key.slice(0, 4) + '****' + key.slice(-4);
-}
-
-// ─── URL safety ───────────────────────────────────────────────────
-
-const BLOCKED_HOSTS = ['127.0.0.1', '::1', '0.0.0.0', '169.254.169.254', 'localhost', 'metadata.google.internal'];
-
-function isUrlSafe(raw: string): boolean {
-  let url: URL;
-  try { url = new URL(raw); } catch { return false; }
-  if (!['http:', 'https:'].includes(url.protocol)) return false;
-  if (process.env.SSS_ALLOW_LOCALHOST_FETCH === '1') return true;
-  const host = url.hostname.toLowerCase();
-  if (BLOCKED_HOSTS.includes(host)) return false;
-  if (host === '[::1]' || host === '[::]') return false;
-  // Block private / loopback / link-local IPs
-  if (/^127\.\d+\.\d+\.\d+$/.test(host)) return false;
-  if (/^10\.\d+\.\d+\.\d+$/.test(host)) return false;
-  if (/^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(host)) return false;
-  if (/^192\.168\.\d+\.\d+$/.test(host)) return false;
-  if (/^169\.254\.\d+\.\d+$/.test(host)) return false;
-  if (/^0\.\d+\.\d+\.\d+$/.test(host)) return false;
-  return true;
-}
-
-// ─── AI helpers ───────────────────────────────────────────────────
-
-function getInternalAiSettings(): AiEngineSettings {
-  const ai = safeParseObject(getSetting('ai')) as Partial<AiEngineSettings>;
-  const envKey = process.env.SSS_AI_KEY;
-  return {
-    engineType: ai.engineType || 'OPENAI_COMPATIBLE',
-    baseUrl: ai.baseUrl || '',
-    modelName: ai.modelName || '',
-    apiKey: envKey !== undefined ? envKey : (ai.apiKey || ''),
-  };
+function validateSourceLocation(kind: string, location: string): string | null {
+  if (kind === 'manual') return null;
+  if (!/^https?:\/\//i.test(location)) return 'location 必须是 http(s) 链接';
+  try {
+    assertSafeHttpUrl(location);
+  } catch {
+    return '不允许抓取内网或保留地址';
+  }
+  return null;
 }
 
 export function importData(data: Record<string, unknown>): void {
@@ -1164,11 +1192,13 @@ export function importData(data: Record<string, unknown>): void {
     if (data.settings && typeof data.settings === 'object') {
       const settings = data.settings as Record<string, unknown>;
       if (settings.engineType || settings.baseUrl) {
+        const current = getInternalAiSettings();
+        const importedKey = typeof settings.apiKey === 'string' ? settings.apiKey : '';
         setSetting('ai', JSON.stringify({
-          engineType: settings.engineType || 'OPENAI_COMPATIBLE',
-          baseUrl: settings.baseUrl || '',
-          modelName: settings.modelName || '',
-          apiKey: settings.apiKey || '',
+          engineType: typeof settings.engineType === 'string' ? settings.engineType : current.engineType,
+          baseUrl: typeof settings.baseUrl === 'string' ? settings.baseUrl : current.baseUrl,
+          modelName: typeof settings.modelName === 'string' ? settings.modelName : current.modelName,
+          apiKey: importedKey && !isMaskedKey(importedKey) ? importedKey : current.apiKey,
         }));
       }
     }
@@ -1336,6 +1366,7 @@ const VALID_ITEM_STATUSES = ['candidate', 'pending', 'archived', 'read', 'review
 function validateImportData(data: Record<string, unknown>): string | null {
   const ministries = Array.isArray(data.ministries) ? data.ministries : Array.isArray(data.topics) ? data.topics : [];
   const items = Array.isArray(data.items) ? data.items : [];
+  const sources = Array.isArray(data.sources) ? data.sources : [];
 
   for (let i = 0; i < ministries.length; i++) {
     const m = ministries[i] as Record<string, unknown>;
@@ -1347,6 +1378,23 @@ function validateImportData(data: Record<string, unknown>): string | null {
     if (!item.title || !String(item.title).trim()) return `items[${i}].title 不能为空`;
     if (item.status && !VALID_ITEM_STATUSES.includes(String(item.status))) {
       return `items[${i}].status 无效: "${item.status}"`;
+    }
+    const sourceUrl = item.sourceUrl ?? item.source_url ?? null;
+    if (sourceUrl && !/^https?:\/\//i.test(String(sourceUrl))) {
+      return `items[${i}].sourceUrl 必须是 http(s) 链接`;
+    }
+  }
+
+  for (let i = 0; i < sources.length; i++) {
+    const source = sources[i] as Record<string, unknown>;
+    const kind = String(source.kind || 'feed');
+    const location = String(source.location || '');
+    if (kind === 'manual') continue;
+    if (!/^https?:\/\//i.test(location)) return `sources[${i}].location 必须是 http(s) 链接`;
+    try {
+      assertSafeHttpUrl(location);
+    } catch {
+      return `sources[${i}].location 不允许内网或保留地址`;
     }
   }
 

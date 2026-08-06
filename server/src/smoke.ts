@@ -14,6 +14,7 @@ let appServer: http.Server | null = null;
 let mockAiServer: http.Server | null = null;
 let pageServer: http.Server | null = null;
 let port = 0;
+let lastAiAuth = '';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`断言失败：${message}`);
@@ -167,6 +168,7 @@ async function main(): Promise<void> {
     });
     req.on('end', () => {
       if (req.url?.endsWith('/chat/completions') && req.method === 'POST') {
+        lastAiAuth = String(req.headers.authorization || '');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
@@ -252,6 +254,11 @@ async function main(): Promise<void> {
   ].join('');
 
   pageServer = http.createServer((req, res) => {
+    if ((req.url || '').includes('/redirect-to-metadata')) {
+      res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data' });
+      res.end();
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if ((req.url || '').includes('wechat.html')) {
       res.end(wechatHtml);
@@ -317,8 +324,12 @@ async function main(): Promise<void> {
   assert(urlSrc.status === 201, '创建本地 URL 源');
   const urlSourceId = urlSrc.json.id;
 
+  process.env.SSS_AI_KEY = 'sched-env-key';
+  lastAiAuth = '';
   const run1 = await api('POST', '/api/scheduler/run', { ministryId: 'rites' });
   assert(run1.status === 200, '调度器运行');
+  assert(lastAiAuth === 'Bearer sched-env-key', '调度器 AI 调用使用 SSS_AI_KEY');
+  delete process.env.SSS_AI_KEY;
   assert(run1.json.summaries?.[0]?.newCandidates === 1, `首次运行 newCandidates=1，实际 ${run1.json?.summaries?.[0]?.newCandidates}`);
   const candidates = await api('GET', '/api/items?ministryId=rites&status=candidate');
   const candidate = candidates.json.find((it: any) => it.sourceUrl === pageUrl);
@@ -444,6 +455,93 @@ async function main(): Promise<void> {
   assert(setEnv.json?.ai?.apiKey === 'smok****-key', 'SSS_AI_KEY env overrides (masked)');
   delete process.env.SSS_AI_KEY;
   console.log('PASS gemini key: env SSS_AI_KEY overrides');
+
+  // P1 key masking roundtrip + preset masking + export stripping
+  const settingsBefore = await api('GET', '/api/settings');
+  const maskedAiKey = settingsBefore.json.ai.apiKey;
+  const maskedSave = await api('PUT', '/api/settings/ai', {
+    engineType: settingsBefore.json.ai.engineType,
+    baseUrl: settingsBefore.json.ai.baseUrl,
+    modelName: settingsBefore.json.ai.modelName,
+    apiKey: maskedAiKey,
+  });
+  assert(maskedSave.status === 200 && maskedSave.json.apiKey === maskedAiKey, '保存掩码 key 后响应仍为掩码');
+  const dbAiRaw = db.prepare("SELECT value FROM settings WHERE key = 'ai'").get() as { value: string };
+  const dbAi = JSON.parse(dbAiRaw.value);
+  assert(dbAi.apiKey === 'test-key', '掩码 key 不回写数据库');
+
+  await api('PUT', '/api/settings/ai-presets', {
+    presets: [
+      { name: '烟测预置', engineType: 'OPENAI_COMPATIBLE', baseUrl: 'https://x.example/v1', modelName: 'mock', apiKey: 'preset-real-key' },
+    ],
+  });
+  const presetsGet = await api('GET', '/api/settings');
+  assert(presetsGet.json.aiPresets[0].apiKey === 'pres****-key', 'GET presets 掩码 apiKey');
+  await api('PUT', '/api/settings/ai-presets', {
+    presets: [
+      { name: '烟测预置', engineType: 'OPENAI_COMPATIBLE', baseUrl: 'https://x.example/v1', modelName: 'mock', apiKey: 'pres****-key' },
+    ],
+  });
+  const dbPresetsRaw = db.prepare("SELECT value FROM settings WHERE key = 'aiPresets'").get() as { value: string };
+  const dbPresets = JSON.parse(dbPresetsRaw.value);
+  assert(dbPresets[0].apiKey === 'preset-real-key', '掩码 preset key 不回写数据库');
+
+  const exported2 = await api('GET', '/api/export/json');
+  assert(
+    exported2.json.settings.ai.apiKey === '' && exported2.json.settings.aiPresets[0].apiKey === '',
+    '导出 JSON 剔除 ai/preset apiKey',
+  );
+  console.log('PASS key masking: settings roundtrip / presets / export');
+
+  // P1 SSRF: metadata 始终拦截、source 创建拦截内网、重定向每跳校验、IPv4-mapped IPv6
+  const ssrfMetadata = await api('POST', '/api/fetch-web', { url: 'http://169.254.169.254/latest/meta-data' });
+  assert(ssrfMetadata.status === 400, 'fetch-web 拦截 metadata IP');
+  const ssrfSource = await api('POST', '/api/ministries/rites/sources', {
+    name: '内网源',
+    kind: 'url',
+    location: 'http://192.168.1.1/rss',
+  });
+  assert(ssrfSource.status === 400, '创建源拦截私网 IP');
+  const redirectUrl = `http://127.0.0.1:${pagePort}/redirect-to-metadata`;
+  const ssrfRedirect = await api('POST', '/api/fetch-web', { url: redirectUrl });
+  assert(ssrfRedirect.status === 400, 'fetch-web 拦截重定向到 metadata');
+  const { assertSafeFetchTarget } = await import('./urlSafety');
+  let mappedLocalhostAllowed = true;
+  try {
+    await assertSafeFetchTarget('http://[::ffff:127.0.0.1]/');
+  } catch {
+    mappedLocalhostAllowed = false;
+  }
+  assert(mappedLocalhostAllowed, 'IPv4-mapped IPv6 localhost 在 SSS_ALLOW_LOCALHOST_FETCH=1 下放行');
+  let mappedMetadataBlocked = false;
+  try {
+    await assertSafeFetchTarget('http://[::ffff:169.254.169.254]/');
+  } catch {
+    mappedMetadataBlocked = true;
+  }
+  assert(mappedMetadataBlocked, 'IPv4-mapped IPv6 metadata 被拦截');
+  console.log('PASS SSRF: metadata / private source / redirect hop / mapped IPv6');
+
+  // P2: PUT items / import 校验 sourceUrl scheme
+  const urlItem = await api('POST', '/api/items', { ministryId: 'rites', title: 'URL 校验', sourceUrl: 'https://ok.example/a' });
+  assert(urlItem.status === 201, '创建带合法 sourceUrl 条目');
+  const badItemPut = await api('PUT', `/api/items/${urlItem.json.id}`, { sourceUrl: 'javascript:alert(1)' });
+  assert(badItemPut.status === 400, 'PUT items 拒绝非 http(s) sourceUrl');
+  const badItemImport = await api('POST', '/api/import/json', {
+    data: {
+      ministries: [{ id: 't3', title: 'T3' }],
+      items: [{ title: 'x', sourceUrl: 'javascript:alert(1)' }],
+    },
+  });
+  assert(badItemImport.status === 400 && badItemImport.json?.error?.includes('sourceUrl'), '导入校验 sourceUrl scheme');
+  const badSourceImport = await api('POST', '/api/import/json', {
+    data: {
+      ministries: [{ id: 't4', title: 'T4' }],
+      sources: [{ name: 's', kind: 'url', location: 'file:///etc/passwd' }],
+    },
+  });
+  assert(badSourceImport.status === 400 && badSourceImport.json?.error?.includes('location'), '导入校验 source location');
+  console.log('PASS sourceUrl: PUT / import validation');
 
   // P0 completion rate formula
   for (let i = 0; i < 5; i++) {

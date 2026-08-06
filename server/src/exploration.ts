@@ -147,24 +147,31 @@ export function listExplorationItems(
 
 export function archiveExplorationItem(id: string): boolean {
   const db = getDb();
-  const item = db.prepare("SELECT * FROM exploration_items WHERE id = ? AND status = 'new'").get(id) as ExplorationItemRow | undefined;
-  if (!item) return false;
+  const archive = db.transaction((): boolean => {
+    const item = db
+      .prepare("SELECT * FROM exploration_items WHERE id = ? AND status = 'new'")
+      .get(id) as ExplorationItemRow | undefined;
+    if (!item) return false;
 
-  // SM-2 bridge: insert into items table (skip if URL already exists)
-  if (item.source_url) {
-    const existing = db.prepare("SELECT id FROM items WHERE source_url = ? LIMIT 1").get(item.source_url);
-    if (!existing) {
-      const itemId = generateId();
-      const now = nowIso();
-      db.prepare(
-        `INSERT INTO items (id, ministry_id, source_id, content_type, title, summary, full_text, source_url, document_format, file_name, status, quality_score, ai_reason, redraft_count, created_at, approved_at, archived_at, read_at)
-         VALUES (?, ?, NULL, 'WEB_ARTICLE', ?, ?, ?, ?, NULL, NULL, 'archived', 60, '探索卷宗归档', 0, ?, ?, ?, NULL)`
-      ).run(itemId, item.ministry_id, item.title, item.summary, item.full_text, item.source_url, now, now, now);
+    // SM-2 bridge: insert into items table (skip if URL already exists)
+    if (item.source_url) {
+      const existing = db.prepare("SELECT id FROM items WHERE source_url = ? LIMIT 1").get(item.source_url);
+      if (!existing) {
+        const itemId = generateId();
+        const now = nowIso();
+        db.prepare(
+          `INSERT INTO items (id, ministry_id, source_id, content_type, title, summary, full_text, source_url, document_format, file_name, status, quality_score, ai_reason, redraft_count, created_at, approved_at, archived_at, read_at)
+           VALUES (?, ?, NULL, 'WEB_ARTICLE', ?, ?, ?, ?, NULL, NULL, 'archived', 60, '探索卷宗归档', 0, ?, ?, ?, NULL)`
+        ).run(itemId, item.ministry_id, item.title, item.summary, item.full_text, item.source_url, now, now, now);
+      }
     }
-  }
 
-  db.prepare("UPDATE exploration_items SET status = 'archived' WHERE id = ?").run(id);
-  return true;
+    const updated = db
+      .prepare("UPDATE exploration_items SET status = 'archived' WHERE id = ? AND status = 'new'")
+      .run(id);
+    return updated.changes > 0;
+  });
+  return archive.immediate();
 }
 
 export function dismissExplorationItem(id: string): boolean {

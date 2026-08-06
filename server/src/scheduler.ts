@@ -1,5 +1,6 @@
 import { draftArticle } from './ai';
 import { fetchSource } from './fetcher';
+import { getInternalAiSettings } from './settings';
 import {
   formatLocalIso,
   generateId,
@@ -19,7 +20,6 @@ import type {
   PreferenceRow,
   SourceRow,
 } from './types';
-import type { AiEngineSettings } from './types';
 
 interface FetchLogInput {
   date: string;
@@ -57,7 +57,7 @@ async function doRunMinistryFetch(ministryId: string): Promise<MinistryFetchSumm
 
   const preference = getPreference(ministryId);
   const sources = listSources(ministryId).filter((s) => s.enabled === 1);
-  const settings = parseAiSettings(getSetting('ai'));
+  const settings = getInternalAiSettings();
   const autoApproveThreshold = Number(getSetting('autoApproveThreshold') || '0');
 
   if (sources.length === 0) {
@@ -132,20 +132,6 @@ export async function runAllMinistries(): Promise<MinistryFetchSummary[]> {
     summaries.push(await runMinistryFetch(ministry.id));
   }
   return summaries;
-}
-
-function parseAiSettings(raw: string | null): AiEngineSettings {
-  try {
-    const parsed = raw ? JSON.parse(raw) : {};
-    return {
-      engineType: parsed.engineType || 'OPENAI_COMPATIBLE',
-      baseUrl: parsed.baseUrl || '',
-      modelName: parsed.modelName || '',
-      apiKey: parsed.apiKey || '',
-    };
-  } catch {
-    return { engineType: 'OPENAI_COMPATIBLE', baseUrl: '', modelName: '', apiKey: '' };
-  }
 }
 
 function insertCandidate(

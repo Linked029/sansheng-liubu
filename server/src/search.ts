@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import type { AiEngineSettings, ExplorationItemRow, SearchDirectionRow, SearchTermRow } from "./types";
 import { decomposeDirection } from "./ai";
 import { scoreSearchResult } from "./ai";
+import { getInternalAiSettings } from "./settings";
 import {
   insertExplorationItem,
   insertSearchTerm,
@@ -10,12 +11,14 @@ import {
   listSearchTerms,
   touchSearchTerm,
 } from "./exploration";
-import { generateId, getDb, getSetting, listMinistries, nowIso } from "./db";
+import { generateId, getDb, listMinistries, nowIso } from "./db";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
 const RESULTS_PER_TERM = 5;
+const MAX_SCORING_CALLS_PER_RUN = 20;
+const SCORING_TIMEOUT_MS = 30000;
 
 export interface SearchResult {
   title: string;
@@ -28,12 +31,11 @@ export interface SearchResult {
 
 export async function searchWeb(query: string): Promise<SearchResult[]> {
   // Bing search (accessible in China); DuckDuckGo is geo-blocked
-  const url = "https://www.bing.com/search?q=" + encodeURIComponent(query) + "&setlang=zh-cn";
+  const url = "https://www.bing.com/search?q=" + encodeURIComponent(query.slice(0, 200)) + "&setlang=zh-cn";
   const response = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, "Accept": "text/html" },
     signal: AbortSignal.timeout(15000),
   });
-  if (!response.ok) return [];
   if (!response.ok) throw new Error(`搜索请求失败: HTTP ${response.status}`);
   const html = await response.text();
   const $ = cheerio.load(html);
@@ -83,12 +85,17 @@ function extractSourceName(url: string): string {
 
 // ─── Run search for a term ─────────────────────────────────────────
 
+interface ScoringBudget {
+  used: number;
+}
+
 async function runTermSearch(
   term: SearchTermRow,
   ministryId: string,
   directionId: string,
   seenUrls: Set<string>,
   settings?: AiEngineSettings,
+  scoringBudget?: ScoringBudget,
 ): Promise<number> {
   const results = await searchWeb(term.term);
   let added = 0;
@@ -98,12 +105,17 @@ async function runTermSearch(
     if (!keywordRelevant(term.term, r.title, r.snippet)) continue;
     let relevanceScore = 60;
     let authorityScore = 50;
-    if (settings) {
+    if (settings && scoringBudget && scoringBudget.used < MAX_SCORING_CALLS_PER_RUN) {
       try {
-        const scores = await scoreSearchResult(term.term, r.title, r.snippet, r.sourceName, settings);
+        const scores = await withTimeout(
+          scoreSearchResult(term.term, r.title, r.snippet, r.sourceName, settings),
+          SCORING_TIMEOUT_MS,
+          { relevanceScore: 60, authorityScore: 50 },
+        );
         relevanceScore = scores.relevanceScore;
         authorityScore = scores.authorityScore;
       } catch { /* fallback to defaults */ }
+      scoringBudget.used++;
     }
     const item: ExplorationItemRow = {
       id: generateId(),
@@ -144,13 +156,7 @@ export async function runExplorationPipeline(
   const ministry = ministries.find((m) => m.id === direction.ministry_id);
   const ministryTitle = ministry?.title || direction.ministry_id;
 
-  const raw = getSetting("ai");
-  let settings: AiEngineSettings;
-  try {
-    settings = raw ? JSON.parse(raw) : { engineType: "OPENAI_COMPATIBLE", baseUrl: "", modelName: "", apiKey: "" };
-  } catch {
-    settings = { engineType: "OPENAI_COMPATIBLE", baseUrl: "", modelName: "", apiKey: "" };
-  }
+  const settings = getInternalAiSettings();
 
   const decomposed = await decomposeDirection(direction.direction_text, ministryTitle, settings);
   if (decomposed.terms.length === 0) {
@@ -170,9 +176,10 @@ export async function runExplorationPipeline(
 
   let total = 0;
   const seenUrls = new Set<string>();
+  const scoringBudget: ScoringBudget = { used: 0 };
   for (const term of terms) {
     try {
-      total += await runTermSearch(term, direction.ministry_id, direction.id, seenUrls, settings);
+      total += await runTermSearch(term, direction.ministry_id, direction.id, seenUrls, settings, scoringBudget);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push("搜索词 \"" + term.term + "\" 失败: " + msg);
@@ -181,6 +188,15 @@ export async function runExplorationPipeline(
 
   // Direction stays active — user can re-run to refine results
   return { directionId: direction.id, terms: decomposed.terms, totalResults: total, errors };
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => {
+      setTimeout(() => resolve(fallback), ms);
+    }),
+  ]);
 }
 
 // ─── Suggest new fixed sources from exploration archives ────────────
