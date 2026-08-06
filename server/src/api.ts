@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
+import type { AiEngineSettings, AnnotationRow, FetchLogRow, ItemRow, ItemStatus, MinistryRow, PreferenceRow, RejectLogRow, ReviewRating, ReviewRow, SourceRow } from './types';
 import { classifyManual, redraftArticle } from './ai';
 import {
   applyReviewFeedback,
@@ -29,18 +30,6 @@ import {
 } from './db';
 import { fetchSource, fetchUrlArticle } from './fetcher';
 import { runAllMinistries, runMinistryFetch } from './scheduler';
-import type {
-  AiEngineSettings,
-  AnnotationRow,
-  FetchLogRow,
-  ItemRow,
-  MinistryRow,
-  PreferenceRow,
-  RejectLogRow,
-  ReviewRating,
-  ReviewRow,
-  SourceRow,
-} from './types';
 import {
   archiveExplorationItem,
   deleteSearchDirection,
@@ -57,8 +46,26 @@ export function createApp(): express.Express {
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
 
+  app.use((req, _res, next) => {
+    const token = process.env.SSS_TOKEN;
+    if (!token) { next(); return; }
+    if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) { next(); return; }
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) {
+      _res.status(401).json({ error: '未授权：缺少 SSS_TOKEN 认证' });
+      return;
+    }
+    const provided = auth.slice(7);
+    const validTokens = token.split(',').map(t => t.trim()).filter(Boolean);
+    if (!validTokens.includes(provided)) {
+      _res.status(403).json({ error: '未授权：SSS_TOKEN 不匹配' });
+      return;
+    }
+    next();
+  });
+
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, name: '三省六部本地服务', time: new Date().toISOString() });
+    res.json({ ok: true, name: '三省六部本地服务', time: new Date().toISOString(), authEnabled: Boolean(process.env.SSS_TOKEN) });
   });
 
   app.get('/api/dashboard', (_req, res, next) => {
@@ -366,7 +373,7 @@ export function createApp(): express.Express {
     try {
       const ministryId = typeof req.query.ministryId === 'string' ? req.query.ministryId : undefined;
       const statusRaw = typeof req.query.status === 'string' ? req.query.status : undefined;
-      const statuses = statusRaw ? statusRaw.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+      const statuses = statusRaw ? statusRaw.split(',').map((s) => s.trim()).filter(Boolean) : ['candidate', 'pending', 'archived', 'read', 'reviewing', 'mastered'];
       res.json(listItems(ministryId, statuses).map(itemJson));
     } catch (error) {
       next(error);
@@ -505,16 +512,31 @@ export function createApp(): express.Express {
         res.status(404).json({ error: '奏折不存在' });
         return;
       }
-      if (item.status !== 'candidate' && item.status !== 'pending') {
-        res.status(400).json({ error: '只有待批奏折可以驳回' });
+      const rejectable: ItemStatus[] = ['candidate', 'pending', 'archived', 'read', 'reviewing'];
+      if (!rejectable.includes(item.status)) {
+        res.status(400).json({ error: '该奏折状态不可驳回' });
         return;
       }
       const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
       db.prepare(
         'INSERT INTO reject_logs (id, item_id, source_id, reason, title, source_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(generateId(), item.id, item.source_id, reason || null, item.title, item.source_url, nowIso());
-      db.prepare('DELETE FROM items WHERE id = ?').run(item.id);
+      db.prepare("UPDATE items SET status = 'rejected' WHERE id = ?").run(item.id);
       res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/items/:id/restore', (req, res, next) => {
+    try {
+      const item = getItem(req.params.id);
+      if (!item || item.status !== 'rejected') {
+        res.status(404).json({ error: '未找到已驳回的奏折' });
+        return;
+      }
+      getDb().prepare("UPDATE items SET status = 'archived' WHERE id = ?").run(item.id);
+      res.json(itemJson(getItem(item.id)!));
     } catch (error) {
       next(error);
     }
@@ -776,7 +798,7 @@ export function createApp(): express.Express {
         ministries: listMinistries().map(ministryJson),
         sources: listSources().map(sourceJson),
         preferences: listPreferences().map(preferenceJson),
-        items: listItems().map(itemJson),
+        items: listItems(undefined, undefined).map(itemJson),
         reviews: listReviews().map(reviewJson),
         annotations: listAllAnnotations().map(annotationJson),
         settings: readAppSettings(),
@@ -792,6 +814,11 @@ export function createApp(): express.Express {
       const data = req.body.data || req.body;
       if (!data || typeof data !== 'object') {
         res.status(400).json({ error: '导入数据格式无效' });
+        return;
+      }
+      const validationError = validateImportData(data);
+      if (validationError) {
+        res.status(400).json({ error: validationError });
         return;
       }
       importData(data);
@@ -924,13 +951,14 @@ function readAppSettings(): {
     modelName: string;
     apiKey: string;
   }[];
+  const envKey = process.env.SSS_AI_KEY;
   const threshold = Number(getSetting('autoApproveThreshold') || '0');
   return {
     ai: {
       engineType: ai.engineType || 'OPENAI_COMPATIBLE',
       baseUrl: ai.baseUrl || '',
       modelName: ai.modelName || '',
-      apiKey: ai.apiKey || '',
+      apiKey: envKey !== undefined ? envKey : (ai.apiKey || ''),
     },
     aiPresets: presets,
     autoApproveThreshold: Number.isFinite(threshold) ? threshold : 0,
@@ -940,6 +968,10 @@ function readAppSettings(): {
 export function importData(data: Record<string, unknown>): void {
   const db = getDb();
   const insertAll = db.transaction(() => {
+    for (const table of ['items', 'reviews', 'annotations', 'sources', 'preferences', 'reject_logs', 'fetch_logs']) {
+      db.exec(`CREATE TEMP TABLE IF NOT EXISTS _backup_${table} AS SELECT * FROM ${table}`);
+    }
+
     const ministries = Array.isArray(data.ministries) ? data.ministries : Array.isArray(data.topics) ? data.topics : [];
     const items = Array.isArray(data.items) ? data.items : [];
     const sources = Array.isArray(data.sources) ? data.sources : [];
@@ -1089,6 +1121,10 @@ export function importData(data: Record<string, unknown>): void {
           apiKey: settings.apiKey || '',
         }));
       }
+    }
+
+    for (const table of ['items', 'reviews', 'annotations', 'sources', 'preferences', 'reject_logs', 'fetch_logs']) {
+      db.exec(`DROP TABLE IF EXISTS _backup_${table}`);
     }
   });
   insertAll();
@@ -1243,4 +1279,26 @@ function safeParseObject(raw: string | null | undefined): Record<string, unknown
   } catch {
     return {};
   }
+}
+
+const VALID_ITEM_STATUSES = ['candidate', 'pending', 'archived', 'read', 'reviewing', 'mastered', 'rejected'];
+
+function validateImportData(data: Record<string, unknown>): string | null {
+  const ministries = Array.isArray(data.ministries) ? data.ministries : Array.isArray(data.topics) ? data.topics : [];
+  const items = Array.isArray(data.items) ? data.items : [];
+
+  for (let i = 0; i < ministries.length; i++) {
+    const m = ministries[i] as Record<string, unknown>;
+    if (!m.id || !String(m.id).trim()) return `ministries[${i}].id 不能为空`;
+  }
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i] as Record<string, unknown>;
+    if (!item.title || !String(item.title).trim()) return `items[${i}].title 不能为空`;
+    if (item.status && !VALID_ITEM_STATUSES.includes(String(item.status))) {
+      return `items[${i}].status 无效: "${item.status}"`;
+    }
+  }
+
+  return null;
 }

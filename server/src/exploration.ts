@@ -77,10 +77,6 @@ export function insertSearchDirection(ministryId: string, directionText: string)
   return row;
 }
 
-export function fulfillSearchDirection(id: string): void {
-  getDb().prepare("UPDATE search_directions SET status = 'fulfilled' WHERE id = ?").run(id);
-}
-
 // ─── Search Terms ──────────────────────────────────────────────────
 
 export function insertSearchTerm(directionId: string, term: string): SearchTermRow {
@@ -144,9 +140,25 @@ export function listExplorationItems(
 }
 
 export function archiveExplorationItem(id: string): boolean {
-  return getDb().prepare(
-    "UPDATE exploration_items SET status = 'archived' WHERE id = ? AND status = 'new'"
-  ).run(id).changes > 0;
+  const db = getDb();
+  const item = db.prepare("SELECT * FROM exploration_items WHERE id = ? AND status = 'new'").get(id) as ExplorationItemRow | undefined;
+  if (!item) return false;
+
+  // SM-2 bridge: insert into items table (skip if URL already exists)
+  if (item.source_url) {
+    const existing = db.prepare("SELECT id FROM items WHERE source_url = ? LIMIT 1").get(item.source_url);
+    if (!existing) {
+      const itemId = generateId();
+      const now = nowIso();
+      db.prepare(
+        `INSERT INTO items (id, ministry_id, source_id, content_type, title, summary, full_text, source_url, document_format, file_name, status, quality_score, ai_reason, redraft_count, created_at, approved_at, archived_at, read_at)
+         VALUES (?, ?, NULL, 'WEB_ARTICLE', ?, ?, ?, ?, NULL, NULL, 'archived', 60, '探索卷宗归档', 0, ?, ?, ?, NULL)`
+      ).run(itemId, item.ministry_id, item.title, item.summary, item.full_text, item.source_url, now, now, now);
+    }
+  }
+
+  db.prepare("UPDATE exploration_items SET status = 'archived' WHERE id = ?").run(id);
+  return true;
 }
 
 export function dismissExplorationItem(id: string): boolean {
@@ -164,13 +176,17 @@ export function isExplorationUrlDuplicate(sourceUrl: string): boolean {
   if (!sourceUrl) return false;
   const db = getDb();
   if (db.prepare("SELECT id FROM items WHERE source_url = ? LIMIT 1").get(sourceUrl)) return true;
+  // Also check recently rejected items (7-day window matches scheduler dedup)
+  if (db.prepare("SELECT id FROM reject_logs WHERE source_url = ? AND created_at >= date('now', 'localtime', '-7 days') LIMIT 1").get(sourceUrl)) return true;
   return false;
 }
 
 
 export function deleteSearchDirection(id: string): boolean {
   return getDb().prepare("DELETE FROM search_directions WHERE id = ?").run(id).changes > 0;
-}export function countArchivesFromSource(sourceName: string): number {
+}
+
+export function countArchivesFromSource(sourceName: string): number {
   const row = getDb().prepare(
     "SELECT COUNT(*) AS c FROM exploration_items WHERE source_name = ? AND status = 'archived'"
   ).get(sourceName) as { c: number };

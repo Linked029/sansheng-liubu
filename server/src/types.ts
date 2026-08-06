@@ -35,6 +35,7 @@ export type ItemStatus =
   | 'archived'
   | 'read'
   | 'reviewing'
+  | 'rejected'
   | 'mastered';
 
 export interface ItemRow {

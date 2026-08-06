@@ -123,8 +123,8 @@ async function main(): Promise<void> {
   const createdB = await api('POST', '/api/items', { ministryId: 'rites', title: '烟测驳回 B', fullText: 'B 正文' });
   const rejectB = await api('POST', `/api/items/${createdB.json.id}/reject`, { reason: '与偏好不符' });
   assert(rejectB.status === 200, '驳回 B');
-  const goneB = await api('GET', `/api/items/${createdB.json.id}`);
-  assert(goneB.status === 404, '驳回后条目不存在');
+  const rejectedB = await api('GET', `/api/items/${createdB.json.id}`);
+  assert(rejectedB.status === 200 && rejectedB.json.status === 'rejected', '驳回后条目状态为rejected');
   const rejectLogs = await api('GET', '/api/reject-logs');
   assert(
     rejectLogs.json.some((r: any) => r.itemId === createdB.json.id && r.reason === '与偏好不符'),
@@ -422,6 +422,102 @@ async function main(): Promise<void> {
   const reviewAfterImport = await api('GET', '/api/reviews/due');
   assert(!reviewAfterImport.json.some((r: any) => r.item.id === createdD.json.id), '导入后已掌握仍不出现在到期队列');
   console.log('PASS annotations/read/SM-2/stats/export-import');
+
+  // P0 auth
+  assert(health.json?.authEnabled === false, 'authEnabled=false when SSS_TOKEN not set');
+  process.env.SSS_TOKEN = 'smoke-test-token';
+  const ht2 = await api('GET', '/api/health');
+  assert(ht2.json?.authEnabled === true, 'authEnabled=true when SSS_TOKEN set');
+  const blockedW = await api('POST', '/api/items', { ministryId: 'rites', title: 'blocked' });
+  assert(blockedW.status === 401, 'SSS_TOKEN -> no Bearer -> 401');
+  delete process.env.SSS_TOKEN;
+  console.log('PASS auth: SSS_TOKEN guard');
+
+  // P0 gemini key
+  process.env.SSS_AI_KEY = 'smoke-env-ai-key';
+  const setEnv = await api('GET', '/api/settings');
+  assert(setEnv.json?.ai?.apiKey === 'smoke-env-ai-key', 'SSS_AI_KEY env overrides');
+  delete process.env.SSS_AI_KEY;
+  console.log('PASS gemini key: env SSS_AI_KEY overrides');
+
+  // P0 completion rate formula
+  for (let i = 0; i < 5; i++) {
+    const ri = await api('POST', '/api/items', { ministryId: 'rites', title: `rate-${i}`, fullText: 't' });
+    await api('POST', `/api/items/${ri.json.id}/approve`);
+    await api('POST', `/api/items/${ri.json.id}/read`);
+    db.prepare('UPDATE reviews SET due_at = ? WHERE item_id = ?').run(`${today}T00:00:00.000`, ri.json.id);
+    if (i < 3) db.prepare('UPDATE reviews SET last_reviewed_at = ? WHERE item_id = ?').run(`${today}T10:00:00.000`, ri.json.id);
+  }
+  const rs = await api('GET', '/api/stats/learning');
+  assert(rs.json.dueToday >= 5, `dueToday>=5, got ${rs.json.dueToday}`);
+  assert(rs.json.completedToday >= 3, `completedToday>=3, got ${rs.json.completedToday}`);
+  const expRate = rs.json.dueToday > 0 ? Math.round((rs.json.completedToday / rs.json.dueToday) * 100) : null;
+  assert(rs.json.completionRate === expRate, `completionRate formula: ${expRate}, got ${rs.json.completionRate}`);
+  console.log('PASS completion rate');
+
+  // P0 import validation
+  const badImp1 = await api('POST', '/api/import/json', { data: { ministries: [{ id: 't', title: 'T' }], items: [{ title: '' }] } });
+  assert(badImp1.status === 400 && badImp1.json?.error?.includes('title'), 'import validate: missing title');
+  const badImp2 = await api('POST', '/api/import/json', { data: { ministries: [{ id: 't2', title: 'T2' }], items: [{ title: 'x', status: 'bogus' }] } });
+  assert(badImp2.status === 400 && badImp2.json?.error?.includes('status'), 'import validate: invalid status');
+  console.log('PASS import validate');
+
+  // P1.1 soft reject + restore + exploration dedup
+  const softItem = await api('POST', '/api/items', { ministryId: 'rites', title: '烟测软删除 E', fullText: 'E 正文' });
+  await api('POST', `/api/items/${softItem.json.id}/approve`);
+  await api('POST', `/api/items/${softItem.json.id}/read`);
+  await api('POST', `/api/items/${softItem.json.id}/reject`, { reason: 'soft test' });
+  const rcE = await api('GET', `/api/items/${softItem.json.id}`);
+  assert(rcE.status === 200 && rcE.json.status === 'rejected', 'soft reject: status=rejected');
+  const revAfter = db.prepare('SELECT * FROM reviews WHERE item_id = ?').get(softItem.json.id);
+  assert(revAfter !== undefined, 'soft reject: review preserved');
+  await api('POST', `/api/items/${softItem.json.id}/restore`);
+  const restE = await api('GET', `/api/items/${softItem.json.id}`);
+  assert(restE.json.status === 'archived', 'restore: status=archived');
+  const rl = await api('GET', '/api/items');
+  assert(!rl.json.some((it: any) => it.status === 'rejected'), 'default listing excludes rejected');
+  console.log('PASS reject: soft delete + restore + review preserved');
+
+  const em = await import('./exploration');
+  db.prepare("INSERT INTO reject_logs (id, item_id, source_id, reason, title, source_url, created_at) VALUES (?, ?, NULL, 'test', 'dedup', ?, ?)").run('smoke-rl1', 'smoke-it1', 'https://example.com/rejected-x', dbModule.nowIso());
+  assert(em.isExplorationUrlDuplicate('https://example.com/rejected-x') === true, 'exploration dedup: url in reject_logs');
+  console.log('PASS exploration dedup: url in recent reject_logs');
+
+  // ─── P1.2: SM-2 bridge ───────────────────────────────────────────
+
+  const { ensureExplorationSchema, insertSearchDirection, archiveExplorationItem, insertExplorationItem } = await import('./exploration');
+  ensureExplorationSchema();
+  const dir = insertSearchDirection('rites', 'smoke direction');
+  const explItem: any = {
+    id: dbModule.generateId(),
+    ministry_id: 'rites',
+    direction_id: dir.id,
+    search_term_id: null,
+    title: '探索桥梁测试',
+    summary: '桥梁摘要',
+    full_text: '桥梁正文',
+    source_url: 'https://example.com/bridge-test',
+    source_name: '测试源',
+    status: 'new',
+    created_at: dbModule.nowIso(),
+  };
+  insertExplorationItem(explItem);
+  const archived = archiveExplorationItem(explItem.id);
+  assert(archived === true, 'SM-2 bridge: archive returns true');
+  const bridgeItem = db.prepare("SELECT * FROM items WHERE source_url = ?").get('https://example.com/bridge-test') as any;
+  assert(bridgeItem != null, 'SM-2 bridge: item row created');
+  assert(bridgeItem.status === 'archived', 'SM-2 bridge: status=archived');
+  // Mark read → review created
+  await api('POST', `/api/items/${bridgeItem.id}/read`);
+  const bridgeReview = db.prepare('SELECT * FROM reviews WHERE item_id = ?').get(bridgeItem.id) as any;
+  assert(bridgeReview != null, 'SM-2 bridge: review row created');
+  assert(bridgeReview.stage === 0 && bridgeReview.status === 'reviewing', 'SM-2 bridge: stage=0, status=reviewing');
+  // Duplicate URL → skip gracefully
+    const explItem2: any = { ...explItem, id: dbModule.generateId(), source_url: 'https://example.com/bridge-test' };
+  insertExplorationItem(explItem2);
+  const archived2 = archiveExplorationItem(explItem2.id);
+  assert(archived2 === true, 'SM-2 bridge: duplicate URL still archives exploration item');
+  console.log('PASS SM-2 bridge: archive → items → read → review');
 
   console.log('SMOKE PASS: health/CRUD/item-flow/redraft/scheduler/timezone 全部断言通过');
   } finally {

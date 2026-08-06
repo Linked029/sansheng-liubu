@@ -270,7 +270,7 @@ function isExcludedByPreference(article: DraftArticle, preference: PreferenceRow
 
 function countItemsCreatedToday(ministryId: string): number {
   const row = getDb().prepare(
-    "SELECT COUNT(*) AS c FROM items WHERE ministry_id = ? AND date(created_at) = date('now', 'localtime')"
+    "SELECT COUNT(*) AS c FROM items WHERE ministry_id = ? AND status != 'rejected' AND date(created_at) = date('now', 'localtime')"
   ).get(ministryId) as { c: number };
   return row.c;
 }
@@ -390,9 +390,11 @@ async function catchUpMissed(): Promise<void> {
     if (ranToday(preference.ministry_id)) continue;
     const scheduled = scheduledTimeToday(preference.schedule_cron);
     if (scheduled && now >= scheduled) {
-      runMinistryFetch(preference.ministry_id).catch((error) => {
+      try {
+        await runMinistryFetch(preference.ministry_id);
+      } catch (error) {
         console.error(`补抓失败 ${preference.ministry_id}:`, error);
-      });
+      }
     }
   }
 }

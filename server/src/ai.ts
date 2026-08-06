@@ -75,9 +75,9 @@ function buildRequest(settings: AiEngineSettings, prompt: string): AiRequest {
       };
     case 'GEMINI':
       return {
-        endpoint: `${endpoint(settings.baseUrl, `models/${settings.modelName}:generateContent`)}?key=${encodeURIComponent(settings.apiKey.trim())}`,
+        endpoint: endpoint(settings.baseUrl, `models/${settings.modelName}:generateContent`),
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.apiKey.trim() },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { maxOutputTokens: 900 },

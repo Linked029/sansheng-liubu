@@ -1,4 +1,4 @@
-// Exploration search: DuckDuckGo HTML scraping + pipeline
+// Exploration search: Bing HTML scraping + pipeline
 import * as cheerio from "cheerio";
 import type { AiEngineSettings, ExplorationItemRow, SearchDirectionRow, SearchTermRow } from "./types";
 import { decomposeDirection } from "./ai";
@@ -33,6 +33,7 @@ export async function searchWeb(query: string): Promise<SearchResult[]> {
     signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) return [];
+  if (!response.ok) throw new Error(`搜索请求失败: HTTP ${response.status}`);
   const html = await response.text();
   const $ = cheerio.load(html);
   const results: SearchResult[] = [];
@@ -72,12 +73,7 @@ async function runTermSearch(
   for (const r of results) {
     if (added >= RESULTS_PER_TERM) break;
     if (!r.url || isExplorationUrlDuplicate(r.url) || seenUrls.has(r.url)) continue;
-    // Relevance filter: insert spaces between ASCII/CJK boundaries, then space-split
-    const raw = term.term.toLowerCase().replace(/([a-z0-9])([\u4e00-\u9fff])/gi, '$1 $2').replace(/([\u4e00-\u9fff])([a-z0-9])/gi, '$1 $2');
-    const segments = raw.split(/\\s+/).filter((s: string) => s.length >= 2);
-    const haystack = (r.title + ' ' + r.snippet).toLowerCase();
-    // Relevance filter disabled — let user manually dismiss irrelevant results
-    // if (segments.length > 0 && !segments.some((s: string) => haystack.includes(s))) continue;
+    // Relevance filter disabled; Chinese tokenisation is fragile. Future: lightweight 2-gram match.
     const item: ExplorationItemRow = {
       id: generateId(),
       ministry_id: ministryId,

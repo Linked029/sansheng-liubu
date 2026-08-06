@@ -45,8 +45,16 @@ export function getDb(): Database.Database {
   db.pragma('foreign_keys = ON');
   initSchema(db);
   migrateTimestampFormat(db);
+  migrateRejectedStatus(db);
   seedDefaults(db);
   return db;
+}
+
+function migrateRejectedStatus(database: Database.Database): void {
+  const row = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='items'").get() as { sql: string } | undefined;
+  if (!row) return;
+  if (row.sql.includes("'rejected'")) return;
+  database.exec("\n    CREATE TABLE IF NOT EXISTS items_new (\n      id TEXT PRIMARY KEY,\n      ministry_id TEXT NOT NULL REFERENCES ministries(id),\n      source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,\n      content_type TEXT NOT NULL DEFAULT 'WEB_ARTICLE',\n      title TEXT NOT NULL,\n      summary TEXT NOT NULL DEFAULT '',\n      full_text TEXT NOT NULL DEFAULT '',\n      source_url TEXT,\n      document_format TEXT,\n      file_name TEXT,\n      status TEXT NOT NULL DEFAULT 'candidate',\n      quality_score REAL NOT NULL DEFAULT 0,\n      ai_reason TEXT,\n      redraft_count INTEGER NOT NULL DEFAULT 0,\n      created_at TEXT NOT NULL,\n      approved_at TEXT,\n      archived_at TEXT,\n      read_at TEXT\n    );\n    INSERT INTO items_new SELECT * FROM items;\n    DROP TABLE items;\n    ALTER TABLE items_new RENAME TO items;\n    CREATE INDEX IF NOT EXISTS idx_items_ministry_status ON items(ministry_id, status);\n    CREATE INDEX IF NOT EXISTS idx_items_source_url ON items(source_url);\n  ");
 }
 
 function initSchema(database: Database.Database): void {
@@ -92,7 +100,7 @@ function initSchema(database: Database.Database): void {
       document_format TEXT,
       file_name TEXT,
       status TEXT NOT NULL DEFAULT 'candidate'
-        CHECK (status IN ('candidate', 'pending', 'archived', 'read', 'reviewing', 'mastered')),
+        CHECK (status IN ('candidate', 'pending', 'archived', 'read', 'reviewing', 'mastered', 'rejected')),
       quality_score REAL NOT NULL DEFAULT 0,
       ai_reason TEXT,
       redraft_count INTEGER NOT NULL DEFAULT 0,
@@ -467,12 +475,11 @@ export function learningStats(date: string): LearningStats {
     "SELECT COUNT(*) AS c FROM reviews WHERE last_reviewed_at IS NOT NULL AND date(last_reviewed_at) >= date(?, '-6 days')"
   ).get(date) as { c: number }).c;
   const masteredCount = (db.prepare("SELECT COUNT(*) AS c FROM reviews WHERE status = 'mastered'").get() as { c: number }).c;
-  const total = completedToday + dueToday;
   return {
     date,
     dueToday,
     completedToday,
-    completionRate: total === 0 ? null : Math.round((completedToday / total) * 100),
+    completionRate: dueToday === 0 ? null : Math.round((completedToday / dueToday) * 100),
     dueByMinistry,
     weeklyCount,
     masteredCount,
